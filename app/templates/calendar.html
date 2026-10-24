@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Календарь ухода{% endblock %}
+
+{% set months = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль",
+                 "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"] %}
+
+{# значки задач за день: сколько растений по каждому действию #}
+{% macro counts(items, cls) -%}
+  {%- for kind, title in task_titles.items() -%}
+    {%- set n = items|selectattr("kind", "equalto", kind)|list|length -%}
+    {%- if n %}<span class="cal-chip {{ cls }}" title="{{ title }}">{{ title.split()[0] }} {{ n }}</span>{% endif -%}
+  {%- endfor -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>📅 Календарь ухода</h1>
+    <p>Сделанное — по отметкам, будущее — прогноз по интервалам из карточек</p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="cal-head">
+    <a class="btn btn-sm btn-ghost" href="?month={{ prev_month.strftime('%Y-%m') }}">←</a>
+    <h2>{{ months[first.month - 1] }} {{ first.year }}</h2>
+    <a class="btn btn-sm btn-ghost" href="?month={{ next_month.strftime('%Y-%m') }}">→</a>
+    <a class="btn btn-sm btn-ghost" href="/calendar">Сегодня</a>
+    <span class="cal-legend muted">
+      <span class="cal-chip done">✓ сделано</span>
+      <span class="cal-chip plan">план</span>
+      <span class="cal-chip late">просрочено</span>
+    </span>
+  </div>
+
+  <div class="cal">
+    {% for name in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"] %}<div class="cal-dow">{{ name }}</div>{% endfor %}
+    {% for week in weeks %}{% for d in week %}
+      {% if d %}
+        {% set info = days[d] %}
+        {% set late = info.planned|selectattr("overdue")|list %}
+        <a class="cal-day {{ 'today' if d == today }} {{ 'selected' if d == selected }} {{ 'past' if d < today }}"
+           href="?day={{ d.isoformat() }}">
+          <span class="cal-num">{{ d.day }}</span>
+          <span class="cal-items">
+            {{ counts(info.done, "done") }}
+            {{ counts(late, "late") }}
+            {{ counts(info.planned|rejectattr("overdue")|list, "plan") }}
+          </span>
+        </a>
+      {% else %}<div class="cal-day empty"></div>{% endif %}
+    {% endfor %}{% endfor %}
+  </div>
+</div>
+
+{% if selected %}
+{% set info = days[selected] %}
+<div class="card section">
+  <h2>{{ selected.strftime("%d.%m.%Y") }}{% if selected == today %} · сегодня{% endif %}</h2>
+  {% if info.planned %}
+  <h3 class="day-title">{{ "Нужно сделать" if selected == today else "По плану" }}</h3>
+  <ul class="history">
+    {% for t in info.planned|sort(attribute="kind") %}
+    <li>
+      <span>{{ task_titles[t.kind] }} · <a href="/plants/{{ t.plant_id }}">{{ t.name }}</a>
+        {% if t.volume %}<span class="muted">· ≈ {{ t.volume }} мл</span>{% endif %}
+        {% if t.overdue %}<span class="badge badge-due">просрочено</span>{% endif %}</span>
+      {% if selected == today %}
+      <form method="post" action="/plants/{{ t.plant_id }}/done/{{ t.kind }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="back" value="calendar:{{ selected.isoformat() }}">
+        <button class="btn btn-sm">✓ {{ done_labels[t.kind] }}</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if info.done %}
+  <h3 class="day-title">Сделано</h3>
+  <ul class="history">
+    {% for e in info.done %}
+    <li>
+      <span>{{ task_titles[e.kind] }} · <a href="/plants/{{ e.plant_id }}">{{ e.name }}</a>
+        <span class="muted">· {{ e.done_at[11:16] }}</span></span>
+      <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="back" value="calendar:{{ selected.isoformat() }}">
+        <button class="btn-link">отменить</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if not info.planned and not info.done %}<p class="muted">В этот день ничего нет.</p>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}{{ plant.name }}{% endblock %}
+
+{% macro status(t) -%}
+  {%- if not t.active -%}<span class="badge badge-off">не сезон</span>
+  {%- elif t.days_left < 0 -%}<span class="badge badge-due">просрочено {{ -t.days_left }} дн.</span>
+  {%- elif t.days_left == 0 -%}<span class="badge badge-due">сегодня</span>
+  {%- elif t.days_left <= 2 -%}<span class="badge badge-soon">{{ days_left_text(t.days_left) }}</span>
+  {%- else -%}<span class="badge badge-ok">{{ days_left_text(t.days_left) }}</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+<div class="crumbs"><a href="/">← Все растения</a></div>
+
+<div class="plant-hero">
+  <div class="card gallery">
+    {% if photos %}
+      <a href="/photos/{{ photos[0].id }}" target="_blank"><img class="main-photo" src="/photos/{{ photos[0].id }}" alt="{{ plant.name }}"></a>
+      {% if photos|length > 1 %}
+      <div class="thumbs">
+      {% for ph in photos %}
+        <div class="thumb-box {{ 'is-main' if ph.is_main }}" title="{{ ph.created_at[:10] }}">
+          <a href="/photos/{{ ph.id }}" target="_blank"><img class="thumb" src="/photos/{{ ph.id }}/thumb" alt=""></a>
+          <div class="thumb-actions">
+            {% if not ph.is_main %}
+            <form method="post" action="/photos/{{ ph.id }}/main">
+              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon-btn" title="Сделать главным">★</button>
+            </form>
+            {% endif %}
+            <form method="post" action="/photos/{{ ph.id }}/delete" data-confirm="Удалить фото?">
+              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon-btn danger" title="Удалить">✕</button>
+            </form>
+          </div>
+        </div>
+      {% endfor %}
+      </div>
+      {% endif %}
+    {% else %}
+      <div class="main-photo empty">🪴</div>
+    {% endif %}
+    <form class="upload" method="post" action="/plants/{{ plant.id }}/photos" enctype="multipart/form-data">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="btn btn-sm btn-ghost">📷 Добавить фото
+        <input type="file" name="file" accept="image/jpeg,image/png,image/webp" data-autosubmit>
+      </label>
+    </form>
+  </div>
+
+  <div class="card info">
+    <h1>{{ plant.name }}</h1>
+    <div class="species">{{ plant.species }}</div>
+    <div class="tags">
+      {% if plant.location %}<span class="chip">📍 {{ plant.location }}</span>{% endif %}
+      {% if plant.toxic %}<span class="badge badge-toxic">☠ {{ plant.toxic }}</span>{% endif %}
+    </div>
+
+    <h2>Уход</h2>
+    <div class="tasks">
+      {% for t in tasks %}
+      <div class="task {{ 'due' if t.due }} {{ 'off' if not t.active }}">
+        <div class="task-head"><span>{{ t.title }}</span>{{ status(t) }}</div>
+        <progress value="{{ [t.interval - t.days_left, t.interval]|min if t.days_left < t.interval else 0 }}" max="{{ t.interval }}"></progress>
+        <div class="muted">
+          {% if t.kind == "repot" %}раз в {{ (t.interval / 365)|round|int }} г.{% else %}раз в {{ t.interval }} дн.{% endif %}
+          · последний: {{ t.last or "—" }}
+        </div>
+        <form method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="plant-actions">
+      <a class="btn btn-sm btn-ghost" href="/plants/{{ plant.id }}/edit">✎ Редактировать</a>
+      <form method="post" action="/plants/{{ plant.id }}/delete" data-confirm="Удалить растение вместе с фото и дневником?">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn btn-sm btn-danger">Удалить</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card section">
+  <h2>Условия содержания</h2>
+  <div class="params">
+    <div class="param"><div class="label">💧 Полив</div>
+      апр–сен: раз в {{ plant.water_summer_days }} дн.<br>окт–мар: раз в {{ plant.water_winter_days }} дн.
+      {% if plant.water_ml %}<br>≈ {{ plant.water_ml }} мл за полив летом, ≈ {{ (plant.water_ml / 2)|round|int }} мл зимой{% endif %}</div>
+    <div class="param"><div class="label">🚿 Как поливать</div>{{ plant.water_how or "—" }}</div>
+    <div class="param"><div class="label">🪴 Почва перед поливом</div>{{ plant.soil or "—" }}</div>
+    <div class="param"><div class="label">🌡 Температура</div>{{ plant.temperature or "—" }}</div>
+    <div class="param"><div class="label">☀️ Свет</div>{{ plant.light or "—" }}</div>
+    <div class="param"><div class="label">💨 Влажность воздуха</div>{{ plant.air_humidity or "—" }}</div>
+    {% if plant.notes %}<div class="param wide"><div class="label">📝 Особенности</div><div class="pre">{{ plant.notes }}</div></div>{% endif %}
+  </div>
+</div>
+
+{% if plant.repotting %}
+<div class="card section">
+  <h2>🪴 Пересадка: грунт и горшок</h2>
+  <div class="params">
+  {% for line in plant.repotting.splitlines() if line.strip() %}
+    {% set topic, _, text = line.lstrip("• ").partition(" — ") %}
+    <div class="param{{ ' wide' if not text or topic == 'Особенность' }}"><div class="label">{{ topic if text else "📝" }}</div>{{ text or topic }}</div>
+  {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if plant.facts %}
+<div class="card section">
+  <h2>📚 Интересные факты</h2>
+  <ul class="facts">
+  {% for line in plant.facts.splitlines() if line.strip() %}
+    {% if line.startswith("Источники:") %}
+      </ul><div class="sources">Источники:
+      {% for url in line[10:].split() if url.startswith("https://") %}
+        <a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url.split("/")[2].replace("www.", "") }}</a>
+      {% endfor %}</div><ul class="facts">
+    {% else %}
+      <li>{{ line.lstrip("• ") }}</li>
+    {% endif %}
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if plant.diseases %}
+<div class="card section">
+  <h2>🩺 Частые болезни и вредители</h2>
+  <ul class="diseases">
+  {% for line in plant.diseases.splitlines() if line.strip() %}
+    {% set title, _, rest = line.lstrip("• ").partition(" — ") %}
+    {% set signs, _, fix = rest.partition(" → ") %}
+    <li>
+      <b>{{ title }}</b>{% if signs %}<div class="muted">{{ signs }}</div>{% endif %}
+      {% if fix %}<div class="fix">✅ {{ fix }}</div>{% endif %}
+    </li>
+  {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="two-col">
+  <div class="card section" id="comments">
+    <h2>📔 Дневник</h2>
+    <form class="diary-form" method="post" action="/plants/{{ plant.id }}/comments">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <textarea name="text" rows="3" maxlength="5000" placeholder="Что происходит: новые листья, пятна, вредители, цветение…" required></textarea>
+      <button class="btn-sm">Добавить запись</button>
+    </form>
+    {% if comments %}
+    <ul class="timeline">
+      {% for c in comments %}
+      <li>
+        <div class="meta">
+          <span>{{ c.created_at[:16].replace("T", " ") }}{% if c.processed_at %} · 🤖 обработано{% endif %}</span>
+          <form method="post" action="/comments/{{ c.id }}/delete" data-confirm="Удалить запись?">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-link">удалить</button>
+          </form>
+        </div>
+        <div class="text pre">{{ c.text }}</div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Записей пока нет.</p>
+    {% endif %}
+  </div>
+
+  <div class="card section">
+    <h2>🕓 История ухода <a class="muted h-link" href="/history?plant={{ plant.id }}">вся история →</a></h2>
+    {% if events %}
+    <ul class="history">
+      {% for e in events %}
+      <li>
+        <span>{{ task_titles[e.kind] }} <span class="muted">· {{ e.done_at[:16].replace("T", " ") }}</span></span>
+        <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
+          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-link">отменить</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">Отметок пока нет — нажмите «✓» в блоке «Уход».</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

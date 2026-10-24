@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ plant.name if plant else "Новое растение" }}{% endblock %}
+{% macro text(field, label, placeholder="") -%}
+  <label>{{ label }} <input name="{{ field }}" value="{{ plant[field] if plant else '' }}" placeholder="{{ placeholder }}" maxlength="2000"></label>
+{%- endmacro %}
+{% macro num(field, label, required=False) -%}
+  <label>{{ label }} <input name="{{ field }}" type="number" min="1" max="5000"
+    value="{{ plant[field] if plant and plant[field] is not none else '' }}" {{ 'required' if required }}></label>
+{%- endmacro %}
+
+{% block content %}
+<div class="crumbs"><a href="{{ '/plants/%d' % plant.id if plant else '/' }}">← Назад</a></div>
+<div class="page-head"><h1>{{ "Редактирование" if plant else "Новое растение" }}</h1></div>
+
+<form method="post">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="form-grid">
+    <fieldset class="card"><legend>🌿 Растение</legend>
+      <label>Название <input name="name" value="{{ plant.name if plant else '' }}" required maxlength="2000"></label>
+      {{ text("species", "Вид (латынь)") }}
+      {{ text("location", "Где стоит", "кухня, подоконник") }}
+      {{ text("toxic", "Ядовитость") }}
+    </fieldset>
+    <fieldset class="card"><legend>💧 Полив</legend>
+      {{ num("water_summer_days", "Интервал апр–сен, дней", True) }}
+      {{ num("water_winter_days", "Интервал окт–мар, дней", True) }}
+      {{ num("water_ml", "Объём, мл") }}
+      {{ text("soil", "Почва перед поливом") }}
+      {{ text("water_how", "Как поливать") }}
+    </fieldset>
+    <fieldset class="card"><legend>☀️ Условия</legend>
+      {{ text("temperature", "Температура") }}
+      {{ text("light", "Свет") }}
+      {{ text("air_humidity", "Влажность воздуха") }}
+    </fieldset>
+    <fieldset class="card"><legend>🔔 Напоминания <span class="muted">(пусто — не напоминать)</span></legend>
+      {{ num("feed_days", "Подкормка (апр–сен), дней") }}
+      {{ num("repot_years", "Пересадка (весной), лет") }}
+      {{ num("spray_days", "Опрыскивание (отопление), дней") }}
+      {{ num("wipe_days", "Протирка листьев, дней") }}
+    </fieldset>
+  </div>
+  <div class="card notes-card">
+    <label>📝 Особенности <textarea name="notes" rows="5" maxlength="10000">{{ plant.notes if plant else '' }}</textarea></label>
+  </div>
+  <div class="card notes-card">
+    <label>📚 Интересные факты <span class="muted">(строка «Источники: …» превращается в ссылки)</span>
+      <textarea name="facts" rows="10" maxlength="10000">{{ plant.facts if plant else '' }}</textarea></label>
+  </div>
+  <div class="card notes-card">
+    <label>🪴 Пересадка <span class="muted">(строка: «• Тема — текст»)</span>
+      <textarea name="repotting" rows="8" maxlength="10000">{{ plant.repotting if plant else '' }}</textarea></label>
+  </div>
+  <div class="card notes-card">
+    <label>🩺 Болезни и вредители <span class="muted">(строка: «• Проблема — признаки → что делать»)</span>
+      <textarea name="diseases" rows="10" maxlength="10000">{{ plant.diseases if plant else '' }}</textarea></label>
+  </div>
+  <div class="form-actions">
+    <button>Сохранить</button>
+    <a class="btn btn-ghost" href="{{ '/plants/%d' % plant.id if plant else '/' }}">Отмена</a>
+  </div>
+</form>
+{% endblock %}

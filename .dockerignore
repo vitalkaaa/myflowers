@@ -1,0 +1,15 @@
+# в образ попадают только app/, seed_photos/ и requirements.txt — секреты и данные не копируем
+.env
+.env.*
+data/
+*.db
+*.db-shm
+*.db-wal
+__pycache__/
+*.pyc
+.venv/
+.git/
+.idea/
+.vscode/
+.claude/
+.DS_Store

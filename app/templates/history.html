@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}История ухода{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>🕓 История ухода</h1>
+    <p>Все отметки «сделано» по всем растениям, свежие сверху</p>
+  </div>
+</div>
+
+<div class="card">
+  <form class="toolbar" method="get" action="/history">
+    <select name="plant" data-autosubmit aria-label="Растение">
+      <option value="0">Все растения</option>
+      {% for p in plants %}
+        <option value="{{ p.id }}" {{ 'selected' if p.id == plant }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+    <select name="kind" data-autosubmit aria-label="Действие">
+      <option value="">Все действия</option>
+      {% for key, title in task_titles.items() %}
+        <option value="{{ key }}" {{ 'selected' if key == kind }}>{{ title }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button class="btn btn-sm">Показать</button></noscript>
+  </form>
+
+  <div class="section">
+  {% for day, events in groups.items() %}
+    <h3 class="day-title">{{ day[8:10] }}.{{ day[5:7] }}.{{ day[:4] }}</h3>
+    <ul class="history">
+      {% for e in events %}
+      <li>
+        <span>{{ task_titles[e.kind] }} · <a href="/plants/{{ e.plant_id }}">{{ e.name }}</a>
+          <span class="muted">· {{ e.done_at[11:16] }}</span></span>
+        <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
+          <input type="hidden" name="csrf" value="{{ csrf }}">
+          <input type="hidden" name="back" value="history">
+          <button class="btn-link">отменить</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="muted">Отметок пока нет. Они появляются, когда вы нажимаете «💧 Полил(а)» и другие кнопки ухода.</p>
+  {% endfor %}
+
+  {% if page > 1 or has_more %}
+  <div class="pager">
+    {% if page > 1 %}<a class="btn btn-sm btn-ghost" href="?plant={{ plant }}&kind={{ kind }}&page={{ page - 1 }}">← Новее</a>{% endif %}
+    {% if has_more %}<a class="btn btn-sm btn-ghost" href="?plant={{ plant }}&kind={{ kind }}&page={{ page + 1 }}">Старше →</a>{% endif %}
+  </div>
+  {% endif %}
+  </div>
+</div>
+{% endblock %}

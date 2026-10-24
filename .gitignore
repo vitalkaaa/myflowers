@@ -1,0 +1,20 @@
+# секреты: токен бота, пароль, SECRET_KEY (шаблон — env.example)
+.env
+.env.*
+
+# база SQLite с фото и записями дневника
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE, системные и локальные файлы
+.idea/
+.vscode/
+.claude/
+.DS_Store

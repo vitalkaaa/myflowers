@@ -1,0 +1,21 @@
+services:
+  web:
+    build: .
+    env_file: .env
+    ports:
+      # порт на компьютере — WEB_PORT из .env (по умолчанию 8080, т.к. 8000 часто занят);
+      # наружу только через reverse-proxy; для доступа из домашней сети уберите 127.0.0.1
+      - "127.0.0.1:${WEB_PORT:-8080}:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  reminders:
+    build: .
+    command: ["python", "-m", "app.notifier"]
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - web            # web создаёт БД и загружает начальный список растений
+    restart: unless-stopped
