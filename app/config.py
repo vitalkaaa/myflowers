@@ -19,6 +19,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")  # например http://host.docker.internal:3128
 REMINDER_CRON = os.getenv("REMINDER_CRON", "0 19 * * *")
+# повтор о том, что так и не отмечено; пустое значение — без повтора
+REMINDER_REPEAT_CRON = os.getenv("REMINDER_REPEAT_CRON", "30 21 * * *").strip()
 BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # для ссылок на карточки в Telegram
 
 BACKUP_CRON = os.getenv("BACKUP_CRON", "30 3 * * *")  # резервная копия БД каждую ночь

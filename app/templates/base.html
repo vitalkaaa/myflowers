@@ -2,28 +2,47 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>{% block title %}Мои растения{% endblock %} · my-flowers</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f5f0" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#121a15" media="(prefers-color-scheme: dark)">
+  <meta name="csrf" content="{{ csrf }}">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Растения">
+  <link rel="stylesheet" href="{{ static_url('style.css') }}">
+  <script src="{{ static_url('app.js') }}" defer></script>
 </head>
 <body>
 {% block body %}
+  <a class="skip-link" href="#main">К содержимому</a>
   <header class="topbar">
-    <a class="logo" href="/"><span class="logo-icon">🌿</span> <span class="logo-text">Дневник растений</span></a>
-    <nav>
+    <a class="logo" href="/"><span class="logo-icon" aria-hidden="true">🌿</span> <span class="logo-text">Дневник растений</span></a>
+    {% if logged_in %}
+    <nav aria-label="Разделы">
       <a class="nav-link" href="/" title="Растения">🪴<span class="nav-text"> Растения</span></a>
       <a class="nav-link" href="/calendar" title="Календарь">📅<span class="nav-text"> Календарь</span></a>
       <a class="nav-link" href="/history" title="История">🕓<span class="nav-text"> История</span></a>
-      <a class="btn btn-sm" href="/plants/new">＋<span class="nav-text"> Растение</span></a>
+      <a class="nav-link" href="/settings" title="Настройки">⚙️<span class="nav-text"> Настройки</span></a>
+      <a class="btn btn-sm" href="/plants/new" title="Добавить растение">＋<span class="nav-text"> Растение</span></a>
       <form method="post" action="/logout">
         {{ csrf_field }}
         <button class="btn btn-sm btn-ghost">Выйти</button>
       </form>
     </nav>
+    {% endif %}
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main id="main">
+    {% if flash %}<div class="flash" role="status">{{ flash }}</div>{% endif %}
+    {% block content %}{% endblock %}
+  </main>
 {% endblock %}
+<div id="toast" class="toast" role="status" aria-live="polite" hidden>
+  <span class="toast-text"></span>
+  <button type="button" class="toast-undo btn-sm" hidden>Отменить</button>
+</div>
 </body>
 </html>

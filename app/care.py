@@ -1,7 +1,10 @@
 """Расчёт сроков ухода. Используется и сайтом, и рассылкой напоминаний."""
+import statistics
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
 
 from app.config import TZ
+from app.db import get_setting, set_setting
 
 TASKS = {
     "water": "💧 Полив",
@@ -27,9 +30,83 @@ DONE_STATES = {
     "wipe": "листья протёрты",
 }
 
-SEASON_MONTHS = range(4, 10)               # апрель–сентябрь: активный рост
-HEATING_MONTHS = (10, 11, 12, 1, 2, 3, 4)  # сухой воздух от батарей
-REPOT_MONTHS = (3, 4)                      # пересаживаем только весной
+REPOT_MONTHS = (3, 4)  # пересаживаем только весной
+MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
+MAX_TRANSITION_DAYS = 60
+SNOOZE_MAX_DAYS = 14
+
+
+@dataclass(frozen=True)
+class Seasons:
+    """Сезоны — со страницы «Настройки». Месяцы включительно, переход через Новый год допустим."""
+    grow_start: int = 4       # сезон роста: летний интервал полива, подкормка
+    grow_end: int = 9
+    heat_start: int = 10      # отопительный сезон: опрыскивание
+    heat_end: int = 4
+    transition_days: int = 0  # 0 — полив меняется скачком; N — плавно за N дней вокруг границы сезона
+
+    @staticmethod
+    def months(start: int, end: int) -> tuple[int, ...]:
+        """(4, 9) -> 4…9; (10, 4) -> 10, 11, 12, 1…4"""
+        return tuple((start - 1 + i) % 12 + 1 for i in range((end - start) % 12 + 1))
+
+    def is_grow(self, day: date) -> bool:
+        return day.month in self.months(self.grow_start, self.grow_end)
+
+    def is_heating(self, day: date) -> bool:
+        return day.month in self.months(self.heat_start, self.heat_end)
+
+    def grow_share(self, day: date) -> float:
+        """Доля «летнего» режима: 1 — сезон роста, 0 — покой, между ними — плавный переход."""
+        base = 1.0 if self.is_grow(day) else 0.0
+        if not self.transition_days or len(self.months(self.grow_start, self.grow_end)) == 12:
+            return base
+        half = self.transition_days / 2
+        end_month = self.grow_end % 12 + 1  # первый месяц покоя
+        for year in (day.year - 1, day.year, day.year + 1):
+            for month, sign in ((self.grow_start, 1), (end_month, -1)):
+                offset = (day - date(year, month, 1)).days
+                if -half <= offset < half:
+                    return min(1.0, max(0.0, 0.5 + sign * offset / self.transition_days))
+        return base
+
+    def label(self) -> str:
+        """«апр–сен»"""
+        return f"{MONTHS[self.grow_start - 1]}–{MONTHS[self.grow_end - 1]}"
+
+    def rest_label(self) -> str:
+        return f"{MONTHS[self.grow_end % 12]}–{MONTHS[(self.grow_start - 2) % 12]}"
+
+    def heat_label(self) -> str:
+        return f"{MONTHS[self.heat_start - 1]}–{MONTHS[self.heat_end - 1]}"
+
+
+DEFAULT_SEASONS = Seasons()
+
+
+def load_seasons(db) -> Seasons:
+    saved = get_setting(db, "seasons") or {}
+    known = {k: v for k, v in saved.items() if k in asdict(DEFAULT_SEASONS) and isinstance(v, int)}
+    return Seasons(**known)
+
+
+def save_seasons(db, seasons: Seasons) -> None:
+    set_setting(db, "seasons", asdict(seasons))
+
+
+@dataclass
+class Snapshot:
+    """Всё, что нужно для расчёта сроков: последние отметки, «отложить» и сезоны."""
+    last_done: dict[int, dict[str, str]] = field(default_factory=dict)  # plant_id -> kind -> done_at
+    snoozed: dict[int, dict[str, str]] = field(default_factory=dict)    # plant_id -> kind -> ГГГГ-ММ-ДД
+    seasons: Seasons = DEFAULT_SEASONS
+
+
+def snapshot(db) -> Snapshot:
+    snap = Snapshot(last_done=last_done_map(db), seasons=load_seasons(db))
+    for row in db.execute("SELECT plant_id, kind, until FROM snoozes"):
+        snap.snoozed.setdefault(row["plant_id"], {})[row["kind"]] = row["until"]
+    return snap
 
 
 def now_str() -> str:
@@ -38,10 +115,6 @@ def now_str() -> str:
 
 def today() -> date:
     return datetime.now(TZ).date()
-
-
-def is_season(day: date) -> bool:
-    return day.month in SEASON_MONTHS
 
 
 def last_done_map(db) -> dict[int, dict[str, str]]:
@@ -55,45 +128,52 @@ def last_done_map(db) -> dict[int, dict[str, str]]:
     return result
 
 
-def interval_for(plant, kind: str, day: date) -> tuple[int | None, bool]:
+def interval_for(plant, kind: str, day: date, seasons: Seasons = DEFAULT_SEASONS) -> tuple[int | None, bool]:
     """(интервал в днях, задача по сезону в этот день). Интервал None — задача не задана."""
     if kind == "water":
-        return (plant["water_summer_days"] if is_season(day) else plant["water_winter_days"]), True
+        summer, winter = plant["water_summer_days"], plant["water_winter_days"]
+        return round(winter + (summer - winter) * seasons.grow_share(day)), True
     if kind == "feed":
-        return plant["feed_days"], is_season(day)
+        return plant["feed_days"], seasons.is_grow(day)
     if kind == "repot":
         return (plant["repot_years"] or 0) * 365 or None, day.month in REPOT_MONTHS
     if kind == "spray":
-        return plant["spray_days"], day.month in HEATING_MONTHS
+        return plant["spray_days"], seasons.is_heating(day)
     return plant["wipe_days"], True
 
 
-def next_due(plant, last_done: dict[str, str], kind: str, interval: int) -> date:
-    """Дата следующего выполнения: последняя отметка + интервал.
+def next_due(plant, last_done: dict[str, str], kind: str, interval: int, snoozed: str | None = None) -> date:
+    """Дата следующего выполнения: последняя отметка + интервал, но не раньше дня «отложить».
 
     Если отметок ещё нет — от даты добавления растения; полив в этом случае
     назначается на следующий день: когда растение поливали до этого, неизвестно.
     """
     last = last_done.get(kind)
     if last:
-        return date.fromisoformat(last[:10]) + timedelta(days=interval)
-    created = date.fromisoformat(plant["created_at"][:10])
-    return created + timedelta(days=1 if kind == "water" else interval)
+        due = date.fromisoformat(last[:10]) + timedelta(days=interval)
+    else:
+        created = date.fromisoformat(plant["created_at"][:10])
+        due = created + timedelta(days=1 if kind == "water" else interval)
+    return max(due, date.fromisoformat(snoozed)) if snoozed else due
 
 
-def plant_tasks(plant, last_done: dict[str, str], day: date) -> list[dict]:
+def plant_tasks(plant, snap: Snapshot, day: date) -> list[dict]:
     """Задачи ухода за растением с количеством дней до следующего выполнения.
 
     active=False — задача сейчас не по сезону (например, подкормка зимой).
+    snoozed — до какого дня задача отложена (если отложена на будущее).
     Если задача ещё ни разу не выполнялась — см. next_due.
     """
+    last_done = snap.last_done.get(plant["id"], {})
+    snoozed = snap.snoozed.get(plant["id"], {})
     tasks = []
     for kind in TASKS:
-        interval, active = interval_for(plant, kind, day)
+        interval, active = interval_for(plant, kind, day, snap.seasons)
         if not interval:
             continue
         last = last_done.get(kind)
-        days_left = (next_due(plant, last_done, kind, interval) - day).days
+        until = snoozed.get(kind)
+        days_left = (next_due(plant, last_done, kind, interval, until) - day).days
         tasks.append({
             "kind": kind,
             "title": TASKS[kind],
@@ -103,38 +183,63 @@ def plant_tasks(plant, last_done: dict[str, str], day: date) -> list[dict]:
             "days_left": days_left,
             "active": active,
             "due": active and days_left <= 0,
+            "snoozed": until if until and date.fromisoformat(until) > day else None,
         })
     return tasks
 
 
-def planned(plant, last_done: dict[str, str], day: date, end: date) -> list[tuple[date, str, bool]]:
-    """Плановые даты ухода с сегодняшнего дня по end: [(дата, kind, просрочено)].
+def planned(plant, snap: Snapshot, day: date, end: date) -> list[tuple[date, str, date | None]]:
+    """Плановые даты ухода с сегодняшнего дня по end: [(дата, kind, с какого дня просрочено)].
 
-    Просроченное ставится на сегодня. Дальше считаем, что всё делается вовремя;
-    даты не по сезону (подкормка зимой и т.п.) пропускаем.
+    Просроченное ставится на сегодня, третий элемент — исходный срок (иначе None).
+    Дальше считаем, что всё делается вовремя; даты не по сезону (подкормка зимой и т.п.) пропускаем.
     """
+    last_done = snap.last_done.get(plant["id"], {})
+    snoozed = snap.snoozed.get(plant["id"], {})
     result = []
     for kind in TASKS:
-        interval, _ = interval_for(plant, kind, day)
+        interval, _ = interval_for(plant, kind, day, snap.seasons)
         if not interval:
             continue
-        due = next_due(plant, last_done, kind, interval)
-        overdue = due < day
+        due = next_due(plant, last_done, kind, interval, snoozed.get(kind))
+        overdue_from = due if due < day else None
         due = max(due, day)
         while due <= end:
-            interval, active = interval_for(plant, kind, due)
+            interval, active = interval_for(plant, kind, due, snap.seasons)
             if active:
-                result.append((due, kind, overdue))
-            overdue = False
+                result.append((due, kind, overdue_from))
+            overdue_from = None
             due += timedelta(days=interval)
     return result
 
 
-def water_volume(plant, day: date | None = None) -> int | None:
-    """Примерный объём полива: зимой растения пьют примерно вдвое меньше."""
+def water_volume(plant, day: date | None = None, seasons: Seasons = DEFAULT_SEASONS) -> int | None:
+    """Примерный объём полива: в покое растения пьют примерно вдвое меньше."""
     if not plant["water_ml"]:
         return None
-    return plant["water_ml"] if is_season(day or today()) else round(plant["water_ml"] / 2)
+    return round(plant["water_ml"] * (0.5 + 0.5 * seasons.grow_share(day or today())))
+
+
+SUGGEST_MIN_GAPS = 3   # подсказываем, только когда есть хотя бы столько промежутков между поливами
+SUGGEST_LAST_GAPS = 8  # и смотрим только на последние
+
+
+def suggest_interval(plant, water_dates: list[str], day: date, seasons: Seasons = DEFAULT_SEASONS) -> dict | None:
+    """Подсказка по истории: обычный промежуток между поливами в текущем сезоне,
+    если он заметно отличается от интервала в карточке. None — подсказки нет."""
+    grow = seasons.is_grow(day)
+    column = "water_summer_days" if grow else "water_winter_days"
+    current = plant[column]
+    days = sorted({date.fromisoformat(d[:10]) for d in water_dates})
+    gaps = [(b - a).days for a, b in zip(days, days[1:]) if seasons.is_grow(a) == grow == seasons.is_grow(b)]
+    gaps = [g for g in gaps if g <= current * 3][-SUGGEST_LAST_GAPS:]  # отпуск и забытые поливы не в счёт
+    if len(gaps) < SUGGEST_MIN_GAPS:
+        return None
+    typical = round(statistics.median(gaps))
+    if abs(typical - current) < max(2, current * 0.25):
+        return None
+    return {"column": column, "current": current, "typical": typical, "gaps": len(gaps),
+            "season": seasons.label() if grow else seasons.rest_label()}
 
 
 def days_left_text(days_left: int) -> str:

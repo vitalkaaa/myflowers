@@ -1,4 +1,4 @@
-{# Общие макросы: {% from "_macros.html" import status %} #}
+{# Общие макросы: {% from "_macros.html" import status, snooze_form with context %} #}
 
 {# Бейдж срока: «просрочено 2 дн.», «сегодня», «через 5 дн.»; active=False — задача не по сезону #}
 {% macro status(days, active=True) -%}
@@ -8,4 +8,21 @@
   {%- elif days <= 2 -%}<span class="badge badge-soon">{{ days_left_text(days) }}</span>
   {%- else -%}<span class="badge badge-ok">{{ days_left_text(days) }}</span>
   {%- endif -%}
+{%- endmacro %}
+
+{# «⏰ +1 д. / +2»: почва ещё влажная — напомнить позже #}
+{% macro snooze_form(plant_id, kind, back) -%}
+  <form class="snooze" method="post" action="/plants/{{ plant_id }}/snooze/{{ kind }}" data-ajax>
+    {{ csrf_field }}<input type="hidden" name="back" value="{{ back }}">
+    <button class="chip-btn" name="days" value="1" title="Напомнить завтра (почва ещё влажная)">⏰ +1 д.</button>
+    <button class="chip-btn" name="days" value="2" title="Напомнить через 2 дня">+2</button>
+  </form>
+{%- endmacro %}
+
+{# Отменить отметку (удалить событие) #}
+{% macro undo_form(event_id, back, label="отменить") -%}
+  <form method="post" action="/events/{{ event_id }}/delete" data-ajax data-confirm="Удалить отметку?">
+    {{ csrf_field }}<input type="hidden" name="back" value="{{ back }}">
+    <button class="btn-link">{{ label }}</button>
+  </form>
 {%- endmacro %}

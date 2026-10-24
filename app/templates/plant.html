@@ -1,28 +1,42 @@
 {% extends "base.html" %}
 {% block title %}{{ plant.name }}{% endblock %}
 
-{% from "_macros.html" import status %}
+{% from "_macros.html" import status, snooze_form, undo_form with context %}
+
+{% macro photo_link(ph) -%}
+  <a href="/photos/{{ ph.id }}" data-lightbox="plant" data-caption="{{ ph.created_at[:10] }}">{{ caller() }}</a>
+{%- endmacro %}
 
 {% block content %}
-<div class="crumbs"><a href="/">← Все растения</a></div>
+<div class="crumbs"><a href="{{ '/archive' if plant.archived_at else '/' }}">← {{ "Архив" if plant.archived_at else "Все растения" }}</a></div>
+
+{% if plant.archived_at %}
+<div class="card archived-banner">
+  <span>📦 В архиве с {{ plant.archived_at[:10] }}{% if plant.archive_reason %} · {{ plant.archive_reason }}{% endif %}.
+    Напоминаний нет, история и дневник сохранены.</span>
+  <form method="post" action="/plants/{{ plant.id }}/restore">
+    {{ csrf_field }}<button class="btn btn-sm">Вернуть в список</button>
+  </form>
+</div>
+{% endif %}
 
 <div class="plant-hero">
   <div class="card gallery">
     {% if photos %}
-      <a href="/photos/{{ photos[0].id }}" target="_blank"><img class="main-photo" src="/photos/{{ photos[0].id }}" alt="{{ plant.name }}"></a>
+      {% call photo_link(photos[0]) %}<img class="main-photo" src="/photos/{{ photos[0].id }}" alt="{{ plant.name }}">{% endcall %}
       {% if photos|length > 1 %}
       <div class="thumbs">
       {% for ph in photos %}
         <div class="thumb-box {{ 'is-main' if ph.is_main }}" title="{{ ph.created_at[:10] }}">
-          <a href="/photos/{{ ph.id }}" target="_blank"><img class="thumb" src="/photos/{{ ph.id }}/thumb" alt=""></a>
+          {% call photo_link(ph) %}<img class="thumb" src="/photos/{{ ph.id }}/thumb" alt="Фото от {{ ph.created_at[:10] }}">{% endcall %}
           <div class="thumb-actions">
             {% if not ph.is_main %}
             <form method="post" action="/photos/{{ ph.id }}/main">
-              {{ csrf_field }}<button class="icon-btn" title="Сделать главным">★</button>
+              {{ csrf_field }}<button class="icon-btn" title="Сделать главным" aria-label="Сделать главным">★</button>
             </form>
             {% endif %}
             <form method="post" action="/photos/{{ ph.id }}/delete" data-confirm="Удалить фото?">
-              {{ csrf_field }}<button class="icon-btn danger" title="Удалить">✕</button>
+              {{ csrf_field }}<button class="icon-btn danger" title="Удалить" aria-label="Удалить фото">✕</button>
             </form>
           </div>
         </div>
@@ -30,11 +44,11 @@
       </div>
       {% endif %}
     {% else %}
-      <div class="main-photo empty">🪴</div>
+      <div class="main-photo empty" aria-hidden="true">🪴</div>
     {% endif %}
     <form class="upload" method="post" action="/plants/{{ plant.id }}/photos" enctype="multipart/form-data">
       {{ csrf_field }}
-      <label class="btn btn-sm btn-ghost">📷 Добавить фото
+      <label class="btn btn-sm btn-ghost" tabindex="0">📷 Добавить фото
         <input type="file" name="file" accept="image/jpeg,image/png,image/webp" data-autosubmit>
       </label>
     </form>
@@ -48,30 +62,76 @@
       {% if plant.toxic %}<span class="badge badge-toxic">☠ {{ plant.toxic }}</span>{% endif %}
     </div>
 
+    {% if suggestion %}
+    <div class="suggestion" role="note">
+      <span>💡 По истории вы поливаете в среднем <b>раз в {{ suggestion.typical }} дн.</b>
+        ({{ suggestion.season }}, последние {{ suggestion.gaps }} поливов), а в карточке — раз в {{ suggestion.current }}.</span>
+      <form method="post" action="/plants/{{ plant.id }}/interval">
+        {{ csrf_field }}<input type="hidden" name="column" value="{{ suggestion.column }}">
+        <button class="btn btn-sm" name="days" value="{{ suggestion.typical }}">Обновить на {{ suggestion.typical }} дн.</button>
+      </form>
+    </div>
+    {% endif %}
+
     <h2>Уход</h2>
-    <div class="tasks">
+    <div class="tasks" id="tasks" data-refresh>
       {% for t in tasks %}
       <div class="task {{ 'due' if t.due }} {{ 'off' if not t.active }}">
         <div class="task-head"><span>{{ t.title }}</span>{{ status(t.days_left, t.active) }}</div>
         <progress value="{{ [t.interval - t.days_left, t.interval]|min if t.days_left < t.interval else 0 }}" max="{{ t.interval }}"></progress>
         <div class="muted">
           {% if t.kind == "repot" %}раз в {{ (t.interval / 365)|round|int }} г.{% else %}раз в {{ t.interval }} дн.{% endif %}
+          {%- if t.kind == "water" and volume %} · ≈ {{ volume }} мл{% endif %}
           · последний: {{ t.last or "—" }}
+          {% if t.snoozed %}<br>⏰ отложено до {{ t.snoozed[8:10] }}.{{ t.snoozed[5:7] }}{% endif %}
         </div>
-        <form class="done-form" method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}">
-          {{ csrf_field }}<button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
-          <input type="date" name="day" value="{{ today }}" min="{{ min_day }}" max="{{ today }}"
-                 aria-label="Дата выполнения" title="Если сделали раньше — выберите дату">
-        </form>
+        {% if not plant.archived_at %}
+        <div class="task-actions">
+          <form method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}" data-ajax>
+            {{ csrf_field }}<button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
+          </form>
+          <details class="more">
+            <summary class="icon-btn" title="Ещё" aria-label="Ещё действия">…</summary>
+            <div class="more-menu">
+              <form method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}" data-ajax>
+                {{ csrf_field }}
+                <label>Сделал(а) раньше
+                  <input type="date" name="day" value="{{ yesterday }}" min="{{ min_day }}" max="{{ yesterday }}" required></label>
+                <button class="btn btn-sm">✓ Отметить</button>
+              </form>
+              {% if t.due %}{{ snooze_form(plant.id, t.kind, "") }}{% endif %}
+              {% if t.snoozed %}
+              <form method="post" action="/plants/{{ plant.id }}/snooze/{{ t.kind }}" data-ajax>
+                {{ csrf_field }}<button class="btn-link" name="days" value="0">Не откладывать</button>
+              </form>
+              {% endif %}
+            </div>
+          </details>
+        </div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
 
     <div class="plant-actions">
       <a class="btn btn-sm btn-ghost" href="/plants/{{ plant.id }}/edit">✎ Редактировать</a>
-      <form method="post" action="/plants/{{ plant.id }}/delete" data-confirm="Удалить растение вместе с фото и дневником?">
-        {{ csrf_field }}<button class="btn btn-sm btn-danger">Удалить</button>
+      {% if plant.archived_at %}
+      <form method="post" action="/plants/{{ plant.id }}/delete" data-confirm="Удалить навсегда вместе с фото, дневником и историей? Это не отменить.">
+        {{ csrf_field }}<button class="btn btn-sm btn-danger">Удалить навсегда</button>
       </form>
+      {% else %}
+      <details class="more archive-menu">
+        <summary class="btn btn-sm btn-ghost">📦 В архив</summary>
+        <form class="more-menu" method="post" action="/plants/{{ plant.id }}/archive">
+          {{ csrf_field }}
+          <label>Причина
+            <input name="reason" list="archive-reasons" maxlength="200" placeholder="погибло, подарено…"></label>
+          <datalist id="archive-reasons">{% for r in archive_reasons %}<option value="{{ r }}">{% endfor %}</datalist>
+          <p class="muted">Растение пропадёт из списка и напоминаний; фото, дневник и история останутся.</p>
+          <button class="btn btn-sm">В архив</button>
+        </form>
+      </details>
+      {% endif %}
     </div>
   </div>
 </div>
@@ -80,8 +140,8 @@
   <h2>Условия содержания</h2>
   <div class="params">
     <div class="param"><div class="label">💧 Полив</div>
-      апр–сен: раз в {{ plant.water_summer_days }} дн.<br>окт–мар: раз в {{ plant.water_winter_days }} дн.
-      {% if plant.water_ml %}<br>≈ {{ plant.water_ml }} мл за полив летом, ≈ {{ (plant.water_ml / 2)|round|int }} мл зимой{% endif %}</div>
+      {{ seasons.label() }}: раз в {{ plant.water_summer_days }} дн.<br>{{ seasons.rest_label() }}: раз в {{ plant.water_winter_days }} дн.
+      {% if plant.water_ml %}<br>≈ {{ plant.water_ml }} мл за полив в сезон роста, ≈ {{ (plant.water_ml / 2)|round|int }} мл в покое{% endif %}</div>
     <div class="param"><div class="label">🚿 Как поливать</div>{{ plant.water_how or "—" }}</div>
     <div class="param"><div class="label">🪴 Почва перед поливом</div>{{ plant.soil or "—" }}</div>
     <div class="param"><div class="label">🌡 Температура</div>{{ plant.temperature or "—" }}</div>
@@ -90,6 +150,22 @@
     {% if plant.notes %}<div class="param wide"><div class="label">📝 Особенности</div><div class="pre">{{ plant.notes }}</div></div>{% endif %}
   </div>
 </div>
+
+{% if growth|length > 1 %}
+<div class="card section">
+  <h2>🌱 Лента роста <span class="muted h-link">{{ growth|length }} фото</span></h2>
+  <ol class="growth">
+    {% for ph in growth %}
+    {% set day = date.fromisoformat(ph.created_at[:10]) %}
+    <li>
+      {% call photo_link(ph) %}<img src="/photos/{{ ph.id }}/thumb" alt="Фото от {{ ph.created_at[:10] }}" loading="lazy">{% endcall %}
+      <span class="growth-date">{{ ph.created_at[8:10] }}.{{ ph.created_at[5:7] }}.{{ ph.created_at[:4] }}</span>
+      <span class="muted">{% if loop.first %}начало{% else %}+{{ (day - growth_start).days }} дн.{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
 
 {% if plant.repotting %}
 <div class="card section">
@@ -140,22 +216,42 @@
 <div class="two-col">
   <div class="card section" id="comments">
     <h2>📔 Дневник</h2>
-    <form class="diary-form" method="post" action="/plants/{{ plant.id }}/comments">
+    <form class="diary-form" method="post" action="/plants/{{ plant.id }}/comments" enctype="multipart/form-data">
       {{ csrf_field }}
-      <textarea name="text" rows="3" maxlength="5000" placeholder="Что происходит: новые листья, пятна, вредители, цветение…" required></textarea>
-      <button class="btn-sm">Добавить запись</button>
+      <textarea name="text" rows="3" maxlength="5000" aria-label="Запись дневника"
+                placeholder="Что происходит: новые листья, пятна, вредители, цветение…"></textarea>
+      <div class="diary-actions">
+        <button class="btn-sm">Добавить запись</button>
+        <label class="btn btn-sm btn-ghost file-label" tabindex="0">📷 Фото к записи
+          <input type="file" name="file" accept="image/jpeg,image/png,image/webp" data-filename></label>
+        <span class="muted file-name"></span>
+      </div>
     </form>
     {% if comments %}
     <ul class="timeline">
       {% for c in comments %}
-      <li>
+      <li id="comment-{{ c.id }}">
         <div class="meta">
-          <span>{{ c.created_at[:16].replace("T", " ") }}{% if c.processed_at %} · 🤖 обработано{% endif %}</span>
-          <form method="post" action="/comments/{{ c.id }}/delete" data-confirm="Удалить запись?">
-            {{ csrf_field }}<button class="btn-link">удалить</button>
-          </form>
+          <span>{{ c.created_at[:16].replace("T", " ") }}{% if c.updated_at %} · изменено{% endif %}{% if c.processed_at %} · 🤖 обработано{% endif %}</span>
+          <span class="meta-actions">
+            {% if c.text %}<button type="button" class="btn-link" data-edit="comment-{{ c.id }}">изменить</button>{% endif %}
+            <form method="post" action="/comments/{{ c.id }}/delete" data-confirm="Удалить запись?">
+              {{ csrf_field }}<button class="btn-link">удалить</button>
+            </form>
+          </span>
         </div>
-        <div class="text pre">{{ c.text }}</div>
+        {% if c.text %}<div class="text pre" data-view>{{ c.text }}</div>{% endif %}
+        <form class="comment-edit" method="post" action="/comments/{{ c.id }}/edit" hidden>
+          {{ csrf_field }}
+          <textarea name="text" rows="3" maxlength="5000" aria-label="Текст записи">{{ c.text }}</textarea>
+          <div class="diary-actions">
+            <button class="btn-sm">Сохранить</button>
+            <button type="button" class="btn btn-sm btn-ghost" data-edit="comment-{{ c.id }}">Отмена</button>
+          </div>
+        </form>
+        {% if c.photo_id %}
+          <a href="/photos/{{ c.photo_id }}" data-lightbox="plant" data-caption="{{ c.created_at[:10] }}"><img class="comment-photo" src="/photos/{{ c.photo_id }}/thumb" alt="Фото к записи" loading="lazy"></a>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -166,20 +262,30 @@
 
   <div class="card section">
     <h2>🕓 История ухода <a class="muted h-link" href="/history?plant={{ plant.id }}">вся история →</a></h2>
+    <div id="plant-history" data-refresh>
     {% if events %}
     <ul class="history">
       {% for e in events %}
       <li>
         <span>{{ task_titles[e.kind] }} <span class="muted">· {{ e.done_at[:16].replace("T", " ") }}</span></span>
-        <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
-          {{ csrf_field }}<button class="btn-link">отменить</button>
-        </form>
+        {{ undo_form(e.id, "") }}
       </li>
       {% endfor %}
     </ul>
     {% else %}
     <p class="muted">Отметок пока нет — нажмите «✓» в блоке «Уход».</p>
     {% endif %}
+    </div>
   </div>
+</div>
+
+<div id="lightbox" class="lightbox" role="dialog" aria-modal="true" aria-label="Просмотр фото" hidden>
+  <button type="button" class="lightbox-close" aria-label="Закрыть">✕</button>
+  <button type="button" class="lightbox-prev" aria-label="Предыдущее фото">‹</button>
+  <figure>
+    <img alt="">
+    <figcaption></figcaption>
+  </figure>
+  <button type="button" class="lightbox-next" aria-label="Следующее фото">›</button>
 </div>
 {% endblock %}

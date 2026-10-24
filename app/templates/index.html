@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_macros.html" import status, snooze_form with context %}
 
 {% macro th(key, title, cls="") -%}
   {%- set desc = sort_spec.get(key) -%}
@@ -8,16 +9,20 @@
   </a></th>
 {%- endmacro %}
 
-{% from "_macros.html" import status %}
+{# атрибуты для фильтров: поиск, место, «нужно сегодня», ядовитые #}
+{% macro filter_attrs(p) -%}
+  data-item data-name="{{ (p.name ~ ' ' ~ p.species ~ ' ' ~ p.location)|lower }}" data-location="{{ p.location|lower }}"
+  data-due="{{ '1' if p.due }}" data-toxic="{{ '1' if p.toxic }}"
+{%- endmacro %}
 
 {% set sort_options = [
   ("next_water", "Следующий полив"),
   ("next_task", "Ближайший уход"),
   ("name", "Название: А → Я"),
   ("-name", "Название: Я → А"),
+  ("location", "Место"),
   ("water_summer", "Полив летом: чаще"),
   ("water_winter", "Полив зимой: чаще"),
-  ("light", "Свет"),
   ("-comments", "Больше записей в дневнике"),
 ] %}
 {% set current_sort = ("-" if sort_spec[sort_order[0]] else "") ~ sort_order[0] %}
@@ -26,88 +31,189 @@
 <div class="page-head">
   <div>
     <h1>Мои растения</h1>
-    <p>{{ rows|length }} растений · {{ "☀️ сезон роста (апр–сен)" if season else "❄️ период покоя (окт–мар)" }}</p>
+    <p>{{ rows|length }} растений · {{ "☀️ сезон роста (" ~ seasons.label() ~ ")" if season else "❄️ период покоя (" ~ seasons.rest_label() ~ ")" }}</p>
   </div>
 </div>
 
-<div class="stats">
-  {% for title, n in stats %}
-    <span class="chip">{{ title }} <b>{{ n }}</b></span>
-  {% else %}
-    <span class="chip">✨ Сегодня всё сделано</span>
+<section id="today" class="card today" data-refresh aria-labelledby="today-title">
+  <div class="today-head">
+    <h2 id="today-title">Сегодня</h2>
+    {% set left = today|map(attribute="todo")|map("length")|sum %}
+    {% if left %}<span class="muted">осталось дел: {{ left }}</span>{% endif %}
+  </div>
+  {% if not today or not today|selectattr("todo")|list %}
+    <p class="all-done">✨ На сегодня всё сделано{% if not today %} — отдыхайте{% endif %}</p>
+  {% endif %}
+  <div class="today-groups">
+  {% for g in today %}
+    <div class="today-group {{ 'is-done' if not g.todo }}">
+      <h3>{{ g.title }} <span class="muted">{{ g.done|length }} из {{ g.todo|length + g.done|length }}</span></h3>
+      <ul class="today-list">
+        {% for p, t in g.todo %}
+        <li class="today-item">
+          <form method="post" action="/plants/{{ p.id }}/done/{{ g.kind }}" data-ajax>
+            {{ csrf_field }}<input type="hidden" name="back" value="index">
+            <button class="check" title="{{ g.done_label }}" aria-label="{{ g.done_label }}: {{ p.name }}"></button>
+          </form>
+          <span class="today-text">
+            <a class="today-name" href="/plants/{{ p.id }}">{{ p.name }}</a>
+            <span class="today-meta">
+              {%- if g.kind == "water" and p.volume %}≈ {{ p.volume }} мл{% endif -%}
+              {%- if g.kind == "water" and p.volume and p.location %} · {% endif -%}
+              {%- if p.location %}📍 {{ p.location }}{% endif -%}
+            </span>
+          </span>
+          {% if t.days_left < 0 %}<span class="badge badge-due" title="Просрочено">+{{ -t.days_left }} дн.</span>{% endif %}
+          {{ snooze_form(p.id, g.kind, "index") }}
+        </li>
+        {% endfor %}
+        {% for e in g.done %}
+        <li class="today-item done">
+          <form method="post" action="/events/{{ e.id }}/delete" data-ajax>
+            {{ csrf_field }}<input type="hidden" name="back" value="index">
+            <button class="check checked" title="Снять отметку" aria-label="Снять отметку: {{ e.name }}">✓</button>
+          </form>
+          <span class="today-text">
+            <a class="today-name" href="/plants/{{ e.plant_id }}">{{ e.name }}</a>
+            <span class="today-meta">{{ g.state }}</span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% if g.todo|length > 1 %}
+      <form class="today-all" method="post" action="/today/done" data-ajax>
+        {{ csrf_field }}<input type="hidden" name="kind" value="{{ g.kind }}"><input type="hidden" name="back" value="index">
+        {% for p, t in g.todo %}<input type="hidden" name="plant" value="{{ p.id }}">{% endfor %}
+        <button class="btn btn-sm">✅ Всё {{ g.state }}</button>
+      </form>
+      {% endif %}
+    </div>
   {% endfor %}
-</div>
+  </div>
+</section>
 
-<div class="card">
+<div class="card" id="plants">
   <div class="toolbar">
-    <input type="search" id="filter" placeholder="🔍  Поиск по названию…" autocomplete="off">
-    <select id="sort-select" class="mobile-only" aria-label="Сортировка">
+    <input type="search" id="filter" placeholder="🔍  Название, вид или место…" autocomplete="off" aria-label="Поиск">
+    {% if locations %}
+    <select id="room-filter" aria-label="Место">
+      <option value="">📍 Все места</option>
+      {% for loc in locations %}<option value="{{ loc|lower }}">{{ loc }}</option>{% endfor %}
+    </select>
+    {% endif %}
+    <label class="toggle"><input type="checkbox" id="due-filter"> Нужно сегодня</label>
+    <label class="toggle"><input type="checkbox" id="toxic-filter"> ☠ Ядовитые</label>
+    <span class="toolbar-gap"></span>
+    <select id="sort-select" class="{{ 'mobile-only' if view == 'table' }}" aria-label="Сортировка">
       {% for value, label in sort_options %}
         <option value="{{ value }}" {{ 'selected' if value == current_sort }}>↕ {{ label }}</option>
       {% endfor %}
     </select>
-    <span class="muted desktop-only">Клик по заголовку — сортировка, <kbd>Shift</kbd>+клик — добавить поле</span>
+    <div class="view-switch" role="group" aria-label="Вид списка">
+      <a href="?view=cards" {{ 'aria-current=true' if view == 'cards' }} title="Карточки">▦<span class="nav-text"> Карточки</span></a>
+      <a href="?view=table" {{ 'aria-current=true' if view == 'table' }} title="Таблица">☰<span class="nav-text"> Таблица</span></a>
+    </div>
   </div>
-  <div class="table-wrap">
-  <table class="plants">
-    <thead><tr>
-      {{ th("name", "Растение", "col-plant") }}
-      {{ th("next_water", "Следующий полив") }}
-      {{ th("water_summer", "☀️ Апр–сен") }}
-      {{ th("water_winter", "❄️ Окт–мар") }}
-      <th>Почва перед поливом</th>
-      {{ th("light", "Свет", "col-wide") }}
-      {{ th("humidity", "Влажность", "col-wide") }}
-      <th class="col-wide">Температура</th>
-      {{ th("next_task", "Ближайший уход") }}
-      {{ th("comments", "💬", "col-desktop") }}
-    </tr></thead>
-    <tbody>
+
+  <div id="plants-list" data-refresh>
+  {% if view == "cards" %}
+    <div class="plant-grid">
     {% for p in rows %}
-      <tr data-name="{{ (p.name ~ ' ' ~ p.species)|lower }}">
-        <td class="col-plant">
-          <a class="plant-cell" href="/plants/{{ p.id }}">
-            {% if p.photo_id %}<img class="thumb" src="/photos/{{ p.photo_id }}/thumb" alt="" loading="lazy">
-            {% else %}<span class="thumb empty">🪴</span>{% endif %}
-            <span>
-              <div class="name">{{ p.name }}</div>
-              <div class="species">{{ p.species }}</div>
+      <article class="plant-card {{ 'is-due' if p.due }}" {{ filter_attrs(p) }}>
+        <a class="plant-card-link" href="/plants/{{ p.id }}">
+          {% if p.photo_id %}<img class="plant-card-photo" src="/photos/{{ p.photo_id }}/thumb" alt="" loading="lazy">
+          {% else %}<span class="plant-card-photo empty" aria-hidden="true">🪴</span>{% endif %}
+          <span class="plant-card-body">
+            <span class="name">{{ p.name }}</span>
+            <span class="species">{{ p.species }}</span>
+            {% if p.location or p.toxic %}
+            <span class="plant-card-tags">
+              {% if p.location %}<span>📍 {{ p.location }}</span>{% endif %}
               {% if p.toxic %}<span class="badge badge-toxic">☠ ядовито</span>{% endif %}
             </span>
-          </a>
-        </td>
-        <td data-label="Полив">
-          <div class="water-cell">
-            {{ status(p.next_water) }}
-            {% if p.water_ml %}<span class="muted ml">≈ {{ water_volume(p) }} мл</span>{% endif %}
-            {% if p.next_water <= 0 %}
-            <form method="post" action="/plants/{{ p.id }}/done/water">
-              {{ csrf_field }}
-              <input type="hidden" name="back" value="index">
-              <button class="btn btn-sm">💧 Полил(а)</button>
-            </form>
             {% endif %}
-          </div>
-        </td>
-        <td class="num" data-label="☀️ Апр–сен">раз в {{ p.water_summer_days }} дн.</td>
-        <td class="num" data-label="❄️ Окт–мар">раз в {{ p.water_winter_days }} дн.</td>
-        <td class="text col-soil" data-label="Почва перед поливом"><div class="clamp" title="{{ p.soil }}">{{ p.soil }}</div></td>
-        <td class="text col-wide"><div class="clamp" title="{{ p.light }}">{{ p.light }}</div></td>
-        <td class="text col-wide"><div class="clamp" title="{{ p.air_humidity }}">{{ p.air_humidity }}</div></td>
-        <td class="text col-wide"><div class="clamp" title="{{ p.temperature }}">{{ p.temperature }}</div></td>
-        <td class="col-next" data-label="Ближайший уход">
+          </span>
+        </a>
+        <div class="plant-card-foot">
           {% if p.next_task %}
-            <div class="next-task">{{ p.next_task.title }}</div>
-            {{ status(p.next_task.days_left) }}
+            <span class="next-task">{{ p.next_task.title }}</span>{{ status(p.next_task.days_left) }}
           {% endif %}
-        </td>
-        <td class="num col-desktop">{{ p.comments or "" }}</td>
-      </tr>
+        </div>
+      </article>
     {% else %}
-      <tr><td colspan="10" class="empty-state">Растений пока нет. <a href="/plants/new">Добавить первое</a></td></tr>
+      <p class="empty-state">Растений пока нет. <a href="/plants/new">Добавить первое</a></p>
     {% endfor %}
-    </tbody>
-  </table>
+    </div>
+  {% else %}
+    <div class="table-wrap">
+    <table class="plants">
+      <thead><tr>
+        {{ th("name", "Растение", "col-plant") }}
+        {{ th("next_water", "Следующий полив") }}
+        {{ th("water_summer", "☀️ " ~ seasons.label()) }}
+        {{ th("water_winter", "❄️ " ~ seasons.rest_label()) }}
+        <th>Почва перед поливом</th>
+        {{ th("location", "Место", "col-wide") }}
+        {{ th("light", "Свет", "col-wide") }}
+        {{ th("humidity", "Влажность", "col-wide") }}
+        <th class="col-wide">Температура</th>
+        {{ th("next_task", "Ближайший уход") }}
+        {{ th("comments", "💬", "col-desktop") }}
+      </tr></thead>
+      <tbody>
+      {% for p in rows %}
+        <tr {{ filter_attrs(p) }}>
+          <td class="col-plant">
+            <a class="plant-cell" href="/plants/{{ p.id }}">
+              {% if p.photo_id %}<img class="thumb" src="/photos/{{ p.photo_id }}/thumb" alt="" loading="lazy">
+              {% else %}<span class="thumb empty">🪴</span>{% endif %}
+              <span>
+                <div class="name">{{ p.name }}</div>
+                <div class="species">{{ p.species }}</div>
+                {% if p.toxic %}<span class="badge badge-toxic">☠ ядовито</span>{% endif %}
+              </span>
+            </a>
+          </td>
+          <td data-label="Полив">
+            <div class="water-cell">
+              {{ status(p.next_water) }}
+              {% if p.volume %}<span class="muted ml">≈ {{ p.volume }} мл</span>{% endif %}
+              {% if p.next_water <= 0 %}
+              <form method="post" action="/plants/{{ p.id }}/done/water" data-ajax>
+                {{ csrf_field }}
+                <input type="hidden" name="back" value="index">
+                <button class="btn btn-sm">💧 Полил(а)</button>
+              </form>
+              {% endif %}
+            </div>
+          </td>
+          <td class="num" data-label="☀️ {{ seasons.label() }}">раз в {{ p.water_summer_days }} дн.</td>
+          <td class="num" data-label="❄️ {{ seasons.rest_label() }}">раз в {{ p.water_winter_days }} дн.</td>
+          <td class="text col-soil" data-label="Почва перед поливом"><div class="clamp" title="{{ p.soil }}">{{ p.soil }}</div></td>
+          <td class="text col-wide"><div class="clamp" title="{{ p.location }}">{{ p.location }}</div></td>
+          <td class="text col-wide"><div class="clamp" title="{{ p.light }}">{{ p.light }}</div></td>
+          <td class="text col-wide"><div class="clamp" title="{{ p.air_humidity }}">{{ p.air_humidity }}</div></td>
+          <td class="text col-wide"><div class="clamp" title="{{ p.temperature }}">{{ p.temperature }}</div></td>
+          <td class="col-next" data-label="Ближайший уход">
+            {% if p.next_task %}
+              <div class="next-task">{{ p.next_task.title }}</div>
+              {{ status(p.next_task.days_left) }}
+            {% endif %}
+          </td>
+          <td class="num col-desktop">{{ p.comments or "" }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="11" class="empty-state">Растений пока нет. <a href="/plants/new">Добавить первое</a></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% endif %}
+  <p class="empty-state filter-empty" hidden>Ничего не найдено — измените поиск или фильтры</p>
   </div>
 </div>
+
+{% if archived %}
+<p class="archive-link"><a href="/archive">📦 Архив · {{ archived }}</a> <span class="muted">— погибшие и подаренные растения с историей</span></p>
+{% endif %}
 {% endblock %}

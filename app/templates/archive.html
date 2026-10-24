@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Архив{% endblock %}
+
+{% block content %}
+<div class="crumbs"><a href="/">← Все растения</a></div>
+<div class="page-head">
+  <div>
+    <h1>📦 Архив</h1>
+    <p>Погибшие, подаренные и проданные растения. Напоминаний по ним нет, фото, дневник и история сохранены.</p>
+  </div>
+</div>
+
+<div class="card">
+  {% if plants %}
+  <ul class="archive-list">
+    {% for p in plants %}
+    <li>
+      <a class="plant-cell" href="/plants/{{ p.id }}">
+        {% if p.photo_id %}<img class="thumb" src="/photos/{{ p.photo_id }}/thumb" alt="" loading="lazy">
+        {% else %}<span class="thumb empty" aria-hidden="true">🪴</span>{% endif %}
+        <span>
+          <span class="name">{{ p.name }}</span>
+          <span class="species">{{ p.species }}</span>
+          <span class="muted">с {{ p.archived_at[:10] }}{% if p.archive_reason %} · {{ p.archive_reason }}{% endif %}
+            · отметок: {{ p.events }} · записей: {{ p.comments }}</span>
+        </span>
+      </a>
+      <form method="post" action="/plants/{{ p.id }}/restore">
+        {{ csrf_field }}<button class="btn btn-sm btn-ghost">Вернуть</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">Архив пуст.</p>
+  {% endif %}
+</div>
+{% endblock %}

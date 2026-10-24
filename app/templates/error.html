@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}{{ "Ошибка" if status >= 400 else "" }}{% endblock %}
+
+{% block content %}
+<div class="card error-page">
+  <div class="error-icon" aria-hidden="true">{{ "🔍" if status == 404 else "🥀" }}</div>
+  <h1>{{ message }}</h1>
+  <p class="muted">Код ошибки {{ status }}</p>
+  <div class="form-actions">
+    <a class="btn" href="/" data-back>← Вернуться</a>
+    <a class="btn btn-ghost" href="/">На главную</a>
+  </div>
+</div>
+{% endblock %}

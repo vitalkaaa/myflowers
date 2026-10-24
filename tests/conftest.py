@@ -1,10 +1,14 @@
 """Тесты работают с временной БД и тестовыми настройками — настоящий .env и data/ не трогаются.
 
-Переменные задаются до импорта app: config читает окружение при импорте,
-а load_dotenv не перезаписывает уже заданные значения.
+Переменные задаются до импорта app: config читает окружение при импорте.
+Файл .env тестам не нужен вовсе — load_dotenv отключаем, чтобы настройки из него не подмешивались.
 """
 import os
 import tempfile
+
+import dotenv
+
+dotenv.load_dotenv = lambda *args, **kwargs: False
 
 _tmp = tempfile.mkdtemp(prefix="my-flowers-tests-")
 os.environ.update(

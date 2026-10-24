@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Настройки{% endblock %}
+
+{% macro month_select(name, value) -%}
+  <select name="{{ name }}" id="s-{{ name }}">
+    {% for m in months %}<option value="{{ loop.index }}" {{ 'selected' if loop.index == value }}>{{ m }}</option>{% endfor %}
+  </select>
+{%- endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>⚙️ Настройки</h1>
+    <p>Сезоны определяют интервал полива, подкормку и опрыскивание для всех растений</p>
+  </div>
+</div>
+
+<form method="post" action="/settings">
+  {{ csrf_field }}
+  <div class="form-grid">
+    <fieldset class="card"><legend>☀️ Сезон роста</legend>
+      <p class="muted span-2">Летний интервал полива и подкормка. В остальные месяцы — период покоя: зимний интервал, полив примерно вдвое меньше.</p>
+      <label for="s-grow_start">С {{ month_select("grow_start", seasons.grow_start) }}</label>
+      <label for="s-grow_end">по {{ month_select("grow_end", seasons.grow_end) }}</label>
+    </fieldset>
+    <fieldset class="card"><legend>🔥 Отопительный сезон</legend>
+      <p class="muted span-2">Воздух от батарей сухой — в эти месяцы напоминаем об опрыскивании.</p>
+      <label for="s-heat_start">С {{ month_select("heat_start", seasons.heat_start) }}</label>
+      <label for="s-heat_end">по {{ month_select("heat_end", seasons.heat_end) }}</label>
+    </fieldset>
+    <fieldset class="card"><legend>🌗 Переход между сезонами</legend>
+      <p class="muted span-2">Вместо скачка в первый день сезона интервал полива и объём меняются постепенно:
+        переход длится указанное число дней — половина до границы сезона, половина после. 0 — скачком.</p>
+      <label>Плавный переход, дней
+        <input name="transition_days" type="number" min="0" max="{{ max_transition }}" value="{{ seasons.transition_days }}" required></label>
+    </fieldset>
+  </div>
+  <div class="form-actions">
+    <button>Сохранить</button>
+  </div>
+</form>
+{% endblock %}

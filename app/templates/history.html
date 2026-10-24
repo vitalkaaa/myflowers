@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% block title %}История ухода{% endblock %}
 
+{% from "_macros.html" import undo_form with context %}
+
 {% block content %}
 <div class="page-head">
   <div>
@@ -14,7 +16,7 @@
     <select name="plant" data-autosubmit aria-label="Растение">
       <option value="0">Все растения</option>
       {% for p in plants %}
-        <option value="{{ p.id }}" {{ 'selected' if p.id == plant }}>{{ p.name }}</option>
+        <option value="{{ p.id }}" {{ 'selected' if p.id == plant }}>{{ p.name }}{{ " · 📦 архив" if p.archived_at }}</option>
       {% endfor %}
     </select>
     <select name="kind" data-autosubmit aria-label="Действие">
@@ -26,7 +28,7 @@
     <noscript><button class="btn btn-sm">Показать</button></noscript>
   </form>
 
-  <div class="section">
+  <div class="section" id="history-list" data-refresh>
   {% for day, events in groups.items() %}
     <h3 class="day-title">{{ day[8:10] }}.{{ day[5:7] }}.{{ day[:4] }}</h3>
     <ul class="history">
@@ -34,11 +36,7 @@
       <li>
         <span>{{ task_titles[e.kind] }} · <a href="/plants/{{ e.plant_id }}">{{ e.name }}</a>
           <span class="muted">· {{ e.done_at[11:16] }}</span></span>
-        <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
-          {{ csrf_field }}
-          <input type="hidden" name="back" value="history">
-          <button class="btn-link">отменить</button>
-        </form>
+        {{ undo_form(e.id, "history") }}
       </li>
       {% endfor %}
     </ul>

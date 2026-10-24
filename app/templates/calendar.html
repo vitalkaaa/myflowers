@@ -12,6 +12,8 @@
   {%- endfor -%}
 {%- endmacro %}
 
+{% from "_macros.html" import snooze_form, undo_form with context %}
+
 {% block content %}
 <div class="page-head">
   <div>
@@ -33,7 +35,7 @@
     </span>
   </div>
 
-  <div class="cal">
+  <div class="cal" id="cal-grid" data-refresh>
     {% for name in ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"] %}<div class="cal-dow">{{ name }}</div>{% endfor %}
     {% for week in weeks %}{% for d in week %}
       {% if d %}
@@ -55,7 +57,8 @@
 
 {% if selected %}
 {% set info = days[selected] %}
-<div class="card section">
+{% set back = "calendar:" ~ selected.isoformat() %}
+<div class="card section" id="cal-day" data-refresh>
   <h2>{{ selected.strftime("%d.%m.%Y") }}{% if selected == today %} · сегодня{% endif %}</h2>
   {% if info.planned %}
   <h3 class="day-title">{{ "Нужно сделать" if selected == today else "По плану" }}</h3>
@@ -64,13 +67,22 @@
     <li>
       <span>{{ task_titles[t.kind] }} · <a href="/plants/{{ t.plant_id }}">{{ t.name }}</a>
         {% if t.volume %}<span class="muted">· ≈ {{ t.volume }} мл</span>{% endif %}
-        {% if t.overdue %}<span class="badge badge-due">просрочено</span>{% endif %}</span>
+        {% if t.overdue %}<span class="badge badge-due">просрочено{% if t.overdue_from %} с {{ t.overdue_from.strftime("%d.%m") }}{% endif %}</span>{% endif %}</span>
       {% if selected == today %}
-      <form method="post" action="/plants/{{ t.plant_id }}/done/{{ t.kind }}">
-        {{ csrf_field }}
-        <input type="hidden" name="back" value="calendar:{{ selected.isoformat() }}">
-        <button class="btn btn-sm">✓ {{ done_labels[t.kind] }}</button>
-      </form>
+      <span class="row-actions">
+        <form method="post" action="/plants/{{ t.plant_id }}/done/{{ t.kind }}" data-ajax>
+          {{ csrf_field }}<input type="hidden" name="back" value="{{ back }}">
+          <button class="btn btn-sm">✓ {{ done_labels[t.kind] }}</button>
+        </form>
+        {% if t.overdue_from %}
+        <form method="post" action="/plants/{{ t.plant_id }}/done/{{ t.kind }}" data-ajax>
+          {{ csrf_field }}<input type="hidden" name="back" value="{{ back }}">
+          <input type="hidden" name="day" value="{{ t.overdue_from.isoformat() }}">
+          <button class="btn btn-sm btn-ghost" title="Сделано вовремя, но не отмечено">✓ {{ t.overdue_from.strftime("%d.%m") }}</button>
+        </form>
+        {% endif %}
+        {{ snooze_form(t.plant_id, t.kind, back) }}
+      </span>
       {% endif %}
     </li>
     {% endfor %}
@@ -84,17 +96,29 @@
     <li>
       <span>{{ task_titles[e.kind] }} · <a href="/plants/{{ e.plant_id }}">{{ e.name }}</a>
         <span class="muted">· {{ e.done_at[11:16] }}</span></span>
-      <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
-        {{ csrf_field }}
-        <input type="hidden" name="back" value="calendar:{{ selected.isoformat() }}">
-        <button class="btn-link">отменить</button>
-      </form>
+      {{ undo_form(e.id, back) }}
     </li>
     {% endfor %}
   </ul>
   {% endif %}
 
   {% if not info.planned and not info.done %}<p class="muted">В этот день ничего нет.</p>{% endif %}
+
+  {% if min_day <= selected < today and plants %}
+  <h3 class="day-title">Отметить за этот день</h3>
+  <form class="add-event" method="post" action="/events" data-ajax>
+    {{ csrf_field }}
+    <input type="hidden" name="back" value="{{ back }}">
+    <input type="hidden" name="day" value="{{ selected.isoformat() }}">
+    <select name="plant" aria-label="Растение" required>
+      {% for p in plants %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}
+    </select>
+    <select name="kind" aria-label="Действие">
+      {% for key, title in task_titles.items() %}<option value="{{ key }}">{{ title }}</option>{% endfor %}
+    </select>
+    <button class="btn btn-sm">✓ Отметить</button>
+  </form>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}
