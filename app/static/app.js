@@ -329,6 +329,28 @@ document.addEventListener("change", (e) => {
   toast.show("Заполнено по справочнику: " + entry.label + " — проверьте и сохраните");
 });
 
+// Новое растение: превью выбранного фото до сохранения
+document.addEventListener("change", (e) => {
+  if (!e.target.matches("[data-photo-preview]")) return;
+  const field = e.target.closest(".photo-field");
+  const img = field.querySelector(".photo-preview");
+  const file = e.target.files[0];
+  if (img.src) URL.revokeObjectURL(img.src);
+  img.hidden = !file;
+  field.querySelector(".photo-empty").hidden = Boolean(file);
+  if (file) img.src = URL.createObjectURL(file);
+  else img.removeAttribute("src");
+  field.querySelector(".photo-name").textContent = file
+    ? `${file.name} · ${file.size < 1024 * 1024 ? Math.ceil(file.size / 1024) + " КБ"
+      : (file.size / 1024 / 1024).toFixed(1).replace(".", ",") + " МБ"}`
+    : "JPEG, PNG или WebP до 10 МБ — можно сразу с камеры";
+});
+
+// Переключатель темы в шапке (сама логика — в theme.js)
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-theme-toggle]") && window.toggleTheme) window.toggleTheme();
+});
+
 restoreFilters();
 fitTable();
 

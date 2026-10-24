@@ -91,7 +91,7 @@
             {{ csrf_field }}<button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
           </form>
           <details class="more">
-            <summary class="icon-btn" title="Ещё" aria-label="Ещё действия">…</summary>
+            <summary class="icon-btn" title="Ещё" aria-label="Ещё действия">⋯</summary>
             <div class="more-menu">
               <form method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}" data-ajax>
                 {{ csrf_field }}

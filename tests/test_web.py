@@ -66,7 +66,7 @@ def test_post_without_csrf_rejected(logged_in, db_plants):
 
 def test_pages_render(logged_in, db_plants):
     plant = db_plants(name="Папоротник")
-    for url in ("/", "/?view=table", "/?view=cards", "/history", "/calendar", "/settings", "/archive",
+    for url in ("/", "/?view=table", "/?view=cards", "/history", "/calendar", "/archive",
                 f"/plants/{plant}", f"/plants/{plant}/edit", "/plants/new"):
         assert logged_in.get(url).status_code == 200, url
 
@@ -293,7 +293,7 @@ def test_backdate_from_calendar(logged_in, db_plants):
     assert events() == [(plant, "feed")]
 
 
-def test_settings_and_interval_suggestion(logged_in, db_plants, monkeypatch):
+def test_interval_suggestion(logged_in, db_plants, monkeypatch):
     monkeypatch.setattr(care, "today", lambda: care.date(2026, 7, 25))
     plant = db_plants(name="Папоротник", water_summer_days=8)
     with get_db() as db:
@@ -301,19 +301,31 @@ def test_settings_and_interval_suggestion(logged_in, db_plants, monkeypatch):
                        [(plant, f"2026-07-{d:02d}T10:00:00+03:00") for d in (1, 5, 9, 13, 17)])
     page = logged_in.get(f"/plants/{plant}").text
     assert "Обновить на 4 дн." in page
-    token = csrf_of(logged_in, "/settings")
+    token = csrf_of(logged_in, f"/plants/{plant}")
     logged_in.post(f"/plants/{plant}/interval", data={"csrf": token, "column": "water_summer_days", "days": "4"})
     with get_db() as db:
         assert db.execute("SELECT water_summer_days FROM plants").fetchone()[0] == 4
     assert logged_in.post(f"/plants/{plant}/interval",
                           data={"csrf": token, "column": "name", "days": "4"}).status_code == 400
-    logged_in.post("/settings", data={"csrf": token, "grow_start": "5", "grow_end": "8", "heat_start": "11",
-                                      "heat_end": "3", "transition_days": "20"})
-    assert "май–авг" in logged_in.get("/").text
-    assert logged_in.post("/settings", data={"csrf": token, "grow_start": "13", "grow_end": "8", "heat_start": "11",
-                                             "heat_end": "3"}).status_code == 400
 
 
 def test_pwa_files(client):
     assert client.get("/static/manifest.webmanifest").json()["start_url"] == "/"
     assert client.get("/sw.js").headers["content-type"].startswith("text/javascript")
+
+
+def test_new_plant_with_photo(logged_in, db_plants):
+    token = csrf_of(logged_in, "/plants/new")
+    data = {"csrf": token, "name": "Кактус", "water_summer_days": "10", "water_winter_days": "30"}
+    bad = logged_in.post("/plants/new", data=data, files={"photo": ("x.png", b"not an image", "image/png")})
+    assert bad.status_code == 400 and "Фото: Файл не похож на изображение" in bad.text
+    assert 'value="Кактус"' in bad.text  # остальное введённое сохранено
+    with get_db() as db:
+        assert db.execute("SELECT COUNT(*) FROM plants").fetchone()[0] == 0  # растение без фото не создано
+    ok = logged_in.post("/plants/new", data=data, files={"photo": ("a.png", png_bytes(), "image/png")},
+                        follow_redirects=False)
+    page = logged_in.get(ok.headers["location"]).text
+    assert re.search(r'class="main-photo" src="/photos/\d+"', page)
+    empty = logged_in.post("/plants/new", data=data, files={"photo": ("", b"", "application/octet-stream")},
+                           follow_redirects=False)
+    assert empty.status_code == 303  # фото необязательно

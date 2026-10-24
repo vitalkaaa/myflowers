@@ -1,5 +1,5 @@
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --bg: #f3f5f0;
   --surface: #ffffff;
   --surface-2: #f8faf6;
@@ -31,40 +31,41 @@
   --login-b: #e9f3dc;
 }
 
-/* тёмная тема — по настройке системы */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #121a15;
-    --surface: #1b251f;
-    --surface-2: #212d26;
-    --ink: #e3ebe5;
-    --muted: #97a59b;
-    --line: #2f3d34;
-    --green: #4fae78;
-    --green-dark: #6cc592;
-    --green-soft: #1f3a2a;
-    --amber: #e3a54a;
-    --amber-soft: #3a2c14;
-    --red: #f08174;
-    --red-soft: #3d201c;
-    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
-    --text-2: #c3cec6;
-    --hover: #222e27;
-    --off: #26302a;
-    --red-line: #6b3530;
-    --due-bg: #2a1d1b;
-    --track: #2f3d34;
-    --dash: #4a5a50;
-    --empty-cell: #171f1a;
-    --topbar: rgba(27, 37, 31, .85);
-    --focus: #7fd6a3;
-    --on-green: #0d1a12;
-    --input-focus: #4fae78;
-    --login-a: #1d3326;
-    --login-b: #24301a;
-  }
+/* тёмная тема: data-theme ставит theme.js — по выбору пользователя или по настройке системы */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #121a15;
+  --surface: #1b251f;
+  --surface-2: #212d26;
+  --ink: #e3ebe5;
+  --muted: #97a59b;
+  --line: #2f3d34;
+  --green: #4fae78;
+  --green-dark: #6cc592;
+  --green-soft: #1f3a2a;
+  --amber: #e3a54a;
+  --amber-soft: #3a2c14;
+  --red: #f08174;
+  --red-soft: #3d201c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .25);
+  --text-2: #c3cec6;
+  --hover: #222e27;
+  --off: #26302a;
+  --red-line: #6b3530;
+  --due-bg: #2a1d1b;
+  --track: #2f3d34;
+  --dash: #4a5a50;
+  --empty-cell: #171f1a;
+  --topbar: rgba(27, 37, 31, .85);
+  --focus: #7fd6a3;
+  --on-green: #0d1a12;
+  --input-focus: #4fae78;
+  --login-a: #1d3326;
+  --login-b: #24301a;
 }
 * { box-sizing: border-box; }
+/* hidden должен скрывать и элементы с display: flex/grid (карточки растений, строки таблицы на телефоне) */
+[hidden] { display: none !important; }
 html { -webkit-font-smoothing: antialiased; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -285,6 +286,12 @@ select {
 /* ---------- навигация, история, календарь ---------- */
 .nav-link { padding: 6px 10px; border-radius: 8px; color: var(--ink); font-weight: 500; font-size: 14px; }
 .nav-link:hover { background: var(--green-soft); }
+.theme-toggle { width: 34px; height: 34px; padding: 0; justify-content: center; border-radius: 8px; font-size: 17px;
+  background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.theme-toggle:hover { background: var(--green-soft); color: var(--ink); }
+.theme-toggle .to-light, :root[data-theme="dark"] .theme-toggle .to-dark { display: none; }
+:root[data-theme="dark"] .theme-toggle .to-light { display: inline; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
 .h-link { font-size: 13px; font-weight: 500; margin-left: 8px; }
 .day-title { font-size: 14px; margin: 18px 0 4px; color: var(--muted); }
 .day-title:first-child { margin-top: 0; }
@@ -390,7 +397,11 @@ body.no-scroll { overflow: hidden; }
 .archive-link { margin: 16px 4px; font-size: 14px; }
 
 /* ---------- карточка растения: действия, подсказки, лента ---------- */
-.task-actions { display: flex; align-items: center; gap: 6px; position: relative; }
+.task-actions { display: flex; align-items: stretch; gap: 6px; position: relative; }
+.task-actions > form, .task-actions > details.more { display: flex; }
+/* «⋯» — это summary, а не button: центрируем сами и тянем на высоту кнопки «✓» рядом */
+details.more > summary.icon-btn { display: inline-flex; align-items: center; justify-content: center; }
+.task-actions summary.icon-btn { width: 34px; height: auto; font-size: 18px; line-height: 1; }
 details.more { position: relative; }
 details.more > summary { list-style: none; cursor: pointer; }
 details.more > summary::-webkit-details-marker { display: none; }
@@ -423,6 +434,16 @@ details.more > summary::-webkit-details-marker { display: none; }
 .row-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .add-event { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 6px; }
 .add-event select { max-width: 260px; }
+.photo-field input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.photo-pick { display: flex; align-items: center; gap: 14px; padding: 10px; cursor: pointer;
+  border: 1px dashed var(--dash); border-radius: 12px; background: var(--surface-2); color: var(--ink); }
+.photo-pick:hover { border-color: var(--green); }
+.photo-field:has(input:focus-visible) .photo-pick { outline: 3px solid var(--focus); outline-offset: 2px; }
+.photo-pick.invalid { border-color: var(--red); background: var(--red-soft); }
+.photo-preview, .photo-empty { width: 72px; height: 72px; border-radius: 10px; flex-shrink: 0; object-fit: cover; }
+.photo-empty { display: grid; place-items: center; font-size: 28px; background: var(--green-soft); }
+.photo-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-weight: 600; }
+.photo-name { font-weight: 400; overflow-wrap: anywhere; }
 .catalog-pick { display: block; padding: 18px 24px; margin-bottom: 20px; }
 .catalog-pick select { display: block; width: 100%; max-width: 480px; margin-top: 6px; font-weight: 400; }
 .catalog-pick p { margin: 8px 0 0; }
@@ -469,6 +490,8 @@ label select { display: block; width: 100%; margin-top: 6px; font-weight: 400; }
   .logo-text { display: none; }
   .nav-text { display: none; }
   .topbar nav { gap: 4px; }
+  .topbar-actions { gap: 4px; }
+  .theme-toggle { width: 32px; height: 32px; font-size: 15px; }
   .cal-head { padding: 12px; }
   .cal-legend { display: none; }
   .cal-day { min-height: 64px; padding: 4px; gap: 3px; }

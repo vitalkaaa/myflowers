@@ -16,6 +16,7 @@ import logging
 import sys
 import time
 from datetime import date, timedelta
+from typing import NamedTuple
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -29,9 +30,42 @@ NAME_LEN = 60            # длинные названия обрезаем в �
 
 
 # ---------- рассылка ----------
+#
+# Сообщение — короткая сводка («осталось 21 из 23 · всего ≈ 2,6 л») и по кнопке на растение,
+# по одной в ряд, чтобы названия не обрезались. Нажатие отмечает растение (✅), повторное — снимает
+# отметку. При каждом нажатии сводка и кнопки «Всё …» / «⏰» пересчитываются.
+#
+# callback_data (первая буква: d — настоящая кнопка, p — пример, в базу не пишет):
+#   d:<растение>:<действие>            отметить
+#   du:<растение>:<действие>:<событие> снять отметку (✅)
+#   dz:<растение>:<действие>           вернуть отложенное (⏰)
+#   da:<действие>                      «✅ Всё …» — отметить все неотмеченные
+#   ds:<действие>:<1|2>                «⏰ +N» — отложить все неотмеченные
+#   x                                  уже отмечено (кнопки старых сообщений)
 
 def short(name: str) -> str:
     return name if len(name) <= NAME_LEN else name[:NAME_LEN - 1] + "…"
+
+
+def fmt_volume(ml: int) -> str:
+    return f"{ml} мл" if ml < 1000 else f"{ml / 1000:.1f} л".replace(".", ",")
+
+
+def plant_label(plant, kind: str, task: dict | None, day: date, seasons: care.Seasons) -> str:
+    """Текст кнопки неотмеченного растения: «Монстера · 300 мл», просроченное — «… · ⚠️ +3 дн.».
+    Название — первым: если кнопка не влезает в ширину экрана, Telegram обрезает конец."""
+    label = short(plant["name"])
+    volume = care.water_volume(plant, day, seasons) if kind == "water" else None
+    if volume:
+        label += f" · {volume} мл"
+    if task and task["days_left"] < 0:
+        label += f" · ⚠️ +{-task['days_left']} дн."
+    return label
+
+
+def header(kind: str, day: date, demo: bool = False, repeat: bool = False) -> str:
+    mark = "🧪 Пример · " if demo else "🔁 Ещё не отмечено · " if repeat else "🌿 "
+    return f"{mark}{care.TASKS[kind]} · {day:%d.%m.%Y}"
 
 
 def build_messages(day: date | None = None, demo: bool = False, repeat: bool = False) -> list[tuple[str, list]]:
@@ -39,43 +73,68 @@ def build_messages(day: date | None = None, demo: bool = False, repeat: bool = F
     demo=True — пример: пометка «🧪 Пример» и кнопки, которые не пишут в базу.
     repeat=True — повторное напоминание о неотмеченном (в заголовке «🔁 Ещё не отмечено»)."""
     day = day or care.today()
-    # тип кнопки: p — пример, d — настоящая отметка; da/pa — «Всё …», ds/ps — «⏰ отложить»
     prefix = "p" if demo else "d"
     with get_db() as db:
-        plants = db.execute("SELECT * FROM plants WHERE archived_at IS NULL ORDER BY name").fetchall()
+        plants = db.execute("SELECT * FROM plants WHERE archived_at IS NULL").fetchall()
         snap = care.snapshot(db)
 
     due: dict[str, list[tuple]] = {}  # kind -> [(растение, задача)]
-    for plant in plants:
+    # по комнатам, внутри — по названию: удобно идти по квартире сверху вниз по списку
+    for plant in sorted(plants, key=lambda p: (p["location"].lower(), p["name"].lower())):
         for task in care.plant_tasks(plant, snap, day):
             if task["due"]:
                 due.setdefault(task["kind"], []).append((plant, task))
 
     messages = []
-    for kind, title in care.TASKS.items():
+    for kind in care.TASKS:
         items = due.get(kind, [])
         for start in range(0, len(items), PLANTS_PER_MESSAGE):
-            chunk = items[start:start + PLANTS_PER_MESSAGE]
-            mark = "🧪 <b>Пример</b> · " if demo else "🔁 Ещё не отмечено · " if repeat else "🌿 "
-            lines = [f"{mark}<b>{title}</b> · {day.strftime('%d.%m.%Y')}", ""]
-            buttons = []
-            for plant, task in chunk:
-                name = html.escape(short(plant["name"]))
-                if config.BASE_URL:
-                    name = f'<a href="{config.BASE_URL}/plants/{plant["id"]}">{name}</a>'
-                volume = care.water_volume(plant, day, snap.seasons) if kind == "water" else None
-                amount = f" — ≈ {volume} мл" if volume else ""
-                late = f" (просрочено {-task['days_left']} дн.)" if task["days_left"] < 0 else ""
-                lines.append(f"• {name}{amount}{late}")
-                buttons.append({"text": f"{short(plant['name'])} — {care.DONE_STATES[kind]}",
-                                "callback_data": f"{prefix}:{plant['id']}:{kind}"})
-            keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-            if len(buttons) > 1:
-                keyboard.append([{"text": f"✅ Всё {care.DONE_STATES[kind]}", "callback_data": f"{prefix}a:{kind}"}])
-            keyboard.append([{"text": "⏰ +1 день", "callback_data": f"{prefix}s:{kind}:1"},
-                             {"text": "⏰ +2 дня", "callback_data": f"{prefix}s:{kind}:2"}])
-            messages.append(("\n".join(lines), keyboard))
+            buttons = [{"text": plant_label(plant, kind, task, day, snap.seasons),
+                        "callback_data": f"{prefix}:{plant['id']}:{kind}"}
+                       for plant, task in items[start:start + PLANTS_PER_MESSAGE]]
+            text = summary(header(kind, day, demo, repeat), kind, buttons, day, snap.seasons)
+            messages.append((text, assemble(buttons, kind, prefix)))
     return messages
+
+
+def assemble(plant_buttons: list[dict], kind: str, prefix: str) -> list[list[dict]]:
+    """Клавиатура: растения по одному в ряд, затем «Всё …» и «⏰», пока есть неотмеченные, и ссылка на сайт."""
+    keyboard = [[button] for button in plant_buttons]
+    left = sum(1 for b in plant_buttons if parse(b.get("callback_data", "")).action == "mark")
+    if left > 1:
+        keyboard.append([{"text": f"✅ Всё {care.DONE_STATES[kind]}", "callback_data": f"{prefix}a:{kind}"}])
+    if left:
+        keyboard.append([{"text": "⏰ +1 день", "callback_data": f"{prefix}s:{kind}:1"},
+                         {"text": "⏰ +2 дня", "callback_data": f"{prefix}s:{kind}:2"}])
+    if config.BASE_URL:
+        keyboard.append([{"text": "🌐 Открыть сайт", "url": f"{config.BASE_URL}/"}])
+    return keyboard
+
+
+def summary(title: str, kind: str, plant_buttons: list[dict], day: date, seasons: care.Seasons) -> str:
+    """Текст сообщения: заголовок и прогресс — «Осталось 21 из 23 · всего ≈ 2,6 л · полито 2»."""
+    states = [parse(b.get("callback_data", "")) for b in plant_buttons]
+    left = [s.plant_id for s in states if s.action == "mark"]
+    done = sum(1 for s in states if s.action in ("unmark", "legacy"))
+    snoozed = sum(1 for s in states if s.action == "unsnooze")
+    progress = [f"{care.DONE_STATES[kind]} {done}"] if done else []
+    if snoozed:
+        progress.append(f"отложено {snoozed}")
+
+    lines = [f"<b>{html.escape(title)}</b>"]
+    if left:
+        status = f"Осталось {len(left)} из {len(plant_buttons)}"
+        if kind == "water":
+            with get_db() as db:
+                rows = db.execute(f"SELECT * FROM plants WHERE id IN ({', '.join('?' * len(left))})", left).fetchall()
+            total = sum(care.water_volume(row, day, seasons) or 0 for row in rows)
+            if total:
+                status += f" · всего ≈ {fmt_volume(total)}"
+        lines.append(" · ".join([status, *progress]))
+        lines.append("<i>Нажмите на растение, когда сделаете; повторное нажатие снимает отметку</i>")
+    else:
+        lines.append("✅ Готово: " + ", ".join(progress or ["всё отмечено"]))
+    return "\n".join(lines)
 
 
 def send(text: str, keyboard: list | None = None) -> bool:
@@ -125,44 +184,90 @@ def preview(day: date | None) -> None:
 
 # ---------- нажатия кнопок ----------
 
+class Button(NamedTuple):
+    action: str | None        # mark, unmark, unsnooze, all, snooze, legacy; None — не наша кнопка
+    demo: bool = False
+    plant_id: int = 0
+    kind: str = ""
+    number: int = 0           # для unmark — id события, для snooze — на сколько дней
+
+
+def _id(raw: str) -> int | None:
+    return int(raw) if raw.isdigit() and len(raw) <= 12 else None
+
+
+def parse(data: str) -> Button:
+    """Разбор callback_data (форматы — в начале раздела «рассылка»); неизвестное -> Button(None)."""
+    if data == "x":
+        return Button("legacy")
+    parts = data.split(":")
+    head, rest = parts[0], parts[1:]
+    if not head or head[0] not in "dp" or len(head) > 2:
+        return Button(None)
+    demo, op = head[0] == "p", head[1:]
+    if op in ("", "u", "z") and len(rest) >= 2 and rest[1] in care.TASKS and _id(rest[0]):
+        if op == "" and len(rest) == 2:
+            return Button("mark", demo, _id(rest[0]), rest[1])
+        if op == "z" and len(rest) == 2:
+            return Button("unsnooze", demo, _id(rest[0]), rest[1])
+        if op == "u" and len(rest) == 3 and _id(rest[2]) is not None:
+            return Button("unmark", demo, _id(rest[0]), rest[1], _id(rest[2]))
+    if op == "a" and len(rest) == 1 and rest[0] in care.TASKS:
+        return Button("all", demo, kind=rest[0])
+    if op == "s" and len(rest) == 2 and rest[0] in care.TASKS and rest[1] in ("1", "2"):
+        return Button("snooze", demo, kind=rest[0], number=int(rest[1]))
+    return Button(None)
+
+
 def parse_button(data: str) -> tuple[int, str, bool] | None:
     """'d:12:water' -> (12, 'water', False); 'p:…' — то же для примера (demo=True); иначе None."""
-    parts = data.split(":")
-    if len(parts) == 3 and parts[0] in ("d", "p") and parts[1].isdigit() and len(parts[1]) <= 9 \
-            and parts[2] in care.TASKS:
-        return int(parts[1]), parts[2], parts[0] == "p"
-    return None
-
-
-def is_all_button(data: str) -> bool:
-    """Кнопка «Всё …»: 'da:water' — настоящая, 'pa:water' — в примере."""
-    return data.split(":")[0] in ("da", "pa")
+    button = parse(data)
+    return (button.plant_id, button.kind, button.demo) if button.action == "mark" else None
 
 
 def parse_snooze(data: str) -> tuple[int, bool] | None:
     """Кнопка «⏰ +N»: 'ds:water:1' -> (1, False); 'ps:…' — в примере; иначе None."""
-    parts = data.split(":")
-    if len(parts) == 3 and parts[0] in ("ds", "ps") and parts[1] in care.TASKS and parts[2] in ("1", "2"):
-        return int(parts[2]), parts[0] == "ps"
-    return None
+    button = parse(data)
+    return (button.number, button.demo) if button.action == "snooze" else None
 
 
-def is_group_button(data: str) -> bool:
-    """Кнопки, которые действуют на всё сообщение: «Всё …» и «⏰ отложить»."""
-    return is_all_button(data) or parse_snooze(data) is not None
+PLANT_ACTIONS = ("mark", "unmark", "unsnooze", "legacy")
 
 
-def mark_plant(plant_id: int, kind: str, demo: bool, until: date | None = None) -> str | None:
-    """Отмечает уход (или откладывает до until) и возвращает название растения.
-    None — растения нет или оно в архиве. В примере ничего не пишет."""
+def apply(button: Button, until: date | None) -> tuple[str | None, dict | None]:
+    """Выполняет нажатие для одного растения: (название, новая кнопка).
+    Название None — растения нет или оно в архиве. В примере в базу ничего не пишется."""
+    prefix = "p" if button.demo else "d"
+    today = care.today()
     with get_db() as db:
-        plant = db.execute("SELECT name FROM plants WHERE id = ? AND archived_at IS NULL", (plant_id,)).fetchone()
-        if plant and not demo:
-            if until:
-                set_snooze(db, plant_id, kind, until.isoformat())
+        plant = db.execute("SELECT * FROM plants WHERE id = ? AND archived_at IS NULL", (button.plant_id,)).fetchone()
+        if not plant:
+            return None, {"text": "растение удалено или в архиве", "callback_data": "x"}
+        name = short(plant["name"])
+        if button.action == "mark" and until:
+            if not button.demo:
+                set_snooze(db, plant["id"], button.kind, until.isoformat())
+            return plant["name"], {"text": f"⏰ {name} · до {until:%d.%m}",
+                                   "callback_data": f"{prefix}z:{plant['id']}:{button.kind}"}
+        if button.action == "mark":
+            event_id = 0
+            if not button.demo:
+                event_id = record_done(db, plant["id"], button.kind, care.now_str()) or db.execute(
+                    "SELECT id FROM events WHERE plant_id = ? AND kind = ? AND substr(done_at, 1, 10) = ? "
+                    "ORDER BY id DESC LIMIT 1", (plant["id"], button.kind, today.isoformat())).fetchone()[0]
+            return plant["name"], {"text": f"✅ {name}",
+                                   "callback_data": f"{prefix}u:{plant['id']}:{button.kind}:{event_id}"}
+        # снять отметку или «отложить» — кнопка снова становится обычной
+        if not button.demo:
+            if button.action == "unmark":
+                db.execute("DELETE FROM events WHERE id = ? AND plant_id = ? AND kind = ?",
+                           (button.number, plant["id"], button.kind))
             else:
-                record_done(db, plant_id, kind, care.now_str())
-    return plant["name"] if plant else None
+                set_snooze(db, plant["id"], button.kind, None)
+        snap = care.snapshot(db)
+    task = next((t for t in care.plant_tasks(plant, snap, today) if t["kind"] == button.kind), None)
+    return plant["name"], {"text": plant_label(plant, button.kind, task, today, snap.seasons),
+                           "callback_data": f"{prefix}:{plant['id']}:{button.kind}"}
 
 
 def is_our_chat(chat: dict) -> bool:
@@ -189,44 +294,49 @@ def handle_callback(callback: dict) -> None:
 
     keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
     buttons = [button for row in keyboard for button in row]
-    snooze = parse_snooze(data) if any(b.get("callback_data") == data for b in buttons) else None
-    if is_all_button(data) or snooze:
-        # «Всё полито» и «⏰ отложить» — для растений, кнопки которых ещё не нажаты в этом сообщении
-        targets = [b for b in buttons if parse_button(b.get("callback_data", ""))]
+    # принимаем только кнопки, которые действительно есть в этом сообщении (подделанные игнорируем)
+    pressed = parse(data) if any(b.get("callback_data") == data for b in buttons) else Button(None)
+    plant_buttons = [b for b in buttons if parse(b.get("callback_data", "")).action in PLANT_ACTIONS]
+    if pressed.action in ("all", "snooze"):
+        # «Всё полито» и «⏰ отложить» — для растений, которые в этом сообщении ещё не отмечены
+        targets = [b for b in plant_buttons if parse(b["callback_data"]).action == "mark"]
+    elif pressed.action in ("mark", "unmark", "unsnooze"):
+        targets = [b for b in plant_buttons if b["callback_data"] == data]
     else:
-        targets = [b for b in buttons if b.get("callback_data") == data and parse_button(data)]
+        targets = []
     if not targets:
         answer(callback["id"], "Уже отмечено")
         return
 
-    until = care.today() + timedelta(days=snooze[0]) if snooze else None
-    marked, demo = [], False
+    until = care.today() + timedelta(days=pressed.number) if pressed.action == "snooze" else None
+    names, kind = [], pressed.kind
     for button in targets:
-        plant_id, kind, demo = parse_button(button["callback_data"])
-        name = mark_plant(plant_id, kind, demo, until)
-        if not name:
-            button["text"] = "растение удалено или в архиве"
-        elif until:
-            button["text"] = f"⏰ {short(name)} — до {until:%d.%m}"
-        else:
-            button["text"] = f"✅ {short(name)} — {care.DONE_STATES[kind]}"
-        button["callback_data"] = "x"  # уже отмечено
+        name, new = apply(parse(button["callback_data"]), until)
+        button.update(new)
         if name:
-            marked.append(name)
+            names.append(name)
 
-    if not any(parse_button(b.get("callback_data", "")) for b in buttons):
-        # всё отмечено — убираем кнопки «Всё …» и «⏰ отложить»
-        keyboard = [row for row in keyboard if not is_group_button(row[0].get("callback_data", ""))]
-    telegram.call("editMessageReplyMarkup", {"chat_id": message["chat"]["id"], "message_id": message["message_id"],
-                                             "reply_markup": {"inline_keyboard": keyboard}})
-    if not marked:
+    prefix = "p" if pressed.demo else "d"
+    title = (message.get("text") or "").split("\n")[0] or header(kind, care.today(), pressed.demo)
+    telegram.call("editMessageText", {
+        "chat_id": message["chat"]["id"], "message_id": message["message_id"],
+        "text": summary(title, kind, plant_buttons, care.today(), care.SEASONS),
+        "parse_mode": "HTML", "disable_web_page_preview": True,
+        "reply_markup": {"inline_keyboard": assemble(plant_buttons, kind, prefix)},
+    })
+
+    if not names:
         answer(callback["id"], "Растение не найдено или в архиве")
-    elif demo:
-        answer(callback["id"], "🧪 Это пример — в историю не записано: " + ", ".join(marked))
+    elif pressed.demo:
+        answer(callback["id"], "🧪 Это пример — в историю не записано: " + ", ".join(names))
     elif until:
-        answer(callback["id"], f"⏰ Отложено до {until:%d.%m}: " + ", ".join(marked))
+        answer(callback["id"], f"⏰ Отложено до {until:%d.%m}: " + ", ".join(names))
+    elif pressed.action == "unmark":
+        answer(callback["id"], "↩️ Отметка снята: " + ", ".join(names))
+    elif pressed.action == "unsnooze":
+        answer(callback["id"], "↩️ Снова в списке: " + ", ".join(names))
     else:
-        answer(callback["id"], "✅ Отмечено: " + ", ".join(marked))
+        answer(callback["id"], "✅ Отмечено: " + ", ".join(names))
 
 
 def command(message: dict) -> str:

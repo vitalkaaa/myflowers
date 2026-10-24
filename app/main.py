@@ -76,7 +76,7 @@ login_required = [Depends(require_login)]
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; img-src 'self'; style-src 'self'; script-src 'self'; "
+        "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; "
         "frame-ancestors 'none'; form-action 'self'"
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -384,14 +384,16 @@ def parse_plant_form(form) -> dict:
 
 def plant_form(request: Request, values: dict, plant_id: int | None, status_code: int = 200,
                error: str | None = None, error_field: str | None = None, ref: str = ""):
-    with get_db() as db:
-        seasons = care.load_seasons(db)
     return render(request, "plant_form.html", status_code=status_code, values=values, plant_id=plant_id,
-                  error=error, error_field=error_field, catalog=CATALOG, ref=ref, seasons=seasons)
+                  error=error, error_field=error_field, catalog=CATALOG, ref=ref, seasons=care.SEASONS)
 
 
-async def submit_plant_form(request: Request, plant_id: int | None) -> dict | Response:
-    """Значения формы растения или та же форма с ошибкой над ней — введённое не теряется."""
+PlantPhoto = tuple[bytes, bytes] | None  # (фото, превью) из формы нового растения
+
+
+async def submit_plant_form(request: Request, plant_id: int | None) -> tuple[dict, PlantPhoto] | Response:
+    """(значения, фото) формы растения или та же форма с ошибкой над ней — введённое не теряется.
+    Фото принимается только при добавлении: у существующего растения есть галерея."""
     form = await request.form()
     entered = {field: str(form.get(field) or "")[:10000] for field in PLANT_FIELDS}
     if not check_csrf(request, str(form.get("csrf", ""))):
@@ -401,9 +403,17 @@ async def submit_plant_form(request: Request, plant_id: int | None) -> dict | Re
         return plant_form(request, entered, plant_id, 403,
                           "Страница устарела — проверьте данные и нажмите «Сохранить» ещё раз")
     try:
-        return parse_plant_form(form)
+        values = parse_plant_form(form)
     except FormError as exc:
         return plant_form(request, entered, plant_id, 400, str(exc), exc.field)
+    file = form.get("photo")
+    if plant_id is not None or not isinstance(file, UploadFile) or not file.filename:
+        return values, None
+    try:
+        return values, await read_photo(file)
+    except ValueError as exc:
+        # файл браузер заново не подставит — просим выбрать его ещё раз
+        return plant_form(request, entered, plant_id, 400, f"Фото: {exc} — выберите другое фото", "photo")
 
 
 @app.get("/plants/new", dependencies=login_required)
@@ -414,13 +424,17 @@ def new_plant_page(request: Request, ref: str = ""):
 
 @app.post("/plants/new", dependencies=login_required)
 async def create_plant(request: Request):
-    values = await submit_plant_form(request, None)
-    if isinstance(values, Response):
-        return values
+    result = await submit_plant_form(request, None)
+    if isinstance(result, Response):
+        return result
+    values, photo = result
     for field in REFERENCE:  # справочные тексты по виду, если их не заполнили
         values[field] = values[field] or reference_text(field, values["species"])
+    now = care.now_str()
     with get_db() as db:
-        plant_id = insert_plant(db, values, care.now_str())
+        plant_id = insert_plant(db, values, now)
+        if photo:
+            add_photo(db, plant_id, *photo, now)
     return redirect(f"/plants/{plant_id}")
 
 
@@ -466,9 +480,10 @@ def edit_plant_page(request: Request, plant_id: int):
 async def edit_plant(request: Request, plant_id: int):
     with get_db() as db:
         get_plant(db, plant_id)
-    values = await submit_plant_form(request, plant_id)
-    if isinstance(values, Response):
-        return values
+    result = await submit_plant_form(request, plant_id)
+    if isinstance(result, Response):
+        return result
+    values, _ = result
     with get_db() as db:
         update_plant(db, plant_id, values)
     return redirect(f"/plants/{plant_id}")
@@ -709,30 +724,6 @@ def calendar_page(request: Request, month: str = "", day: str = ""):
     return render(request, "calendar.html", weeks=weeks, days=days, first=first, today=today,
                   selected=selected, prev_month=prev_month, next_month=last + timedelta(days=1),
                   done_labels=care.DONE_LABELS, plants=plants, min_day=min_day)
-
-
-# ---------- настройки ----------
-
-@app.get("/settings", dependencies=login_required)
-def settings_page(request: Request):
-    with get_db() as db:
-        seasons = care.load_seasons(db)
-    return render(request, "settings.html", seasons=seasons, months=care.MONTHS,
-                  max_transition=care.MAX_TRANSITION_DAYS)
-
-
-@app.post("/settings", dependencies=login_required)
-def save_settings(request: Request, csrf: str = Form(""), grow_start: int = Form(...), grow_end: int = Form(...),
-                  heat_start: int = Form(...), heat_end: int = Form(...), transition_days: int = Form(0)):
-    verify_csrf(request, csrf)
-    if not all(1 <= m <= 12 for m in (grow_start, grow_end, heat_start, heat_end)):
-        raise HTTPException(400, "Месяц — число от 1 до 12")
-    if not 0 <= transition_days <= care.MAX_TRANSITION_DAYS:
-        raise HTTPException(400, f"Плавный переход — от 0 до {care.MAX_TRANSITION_DAYS} дней")
-    with get_db() as db:
-        care.save_seasons(db, care.Seasons(grow_start, grow_end, heat_start, heat_end, transition_days))
-    request.session["flash"] = "Настройки сохранены — сроки ухода пересчитаны"
-    return redirect("/settings")
 
 
 # ---------- фото ----------

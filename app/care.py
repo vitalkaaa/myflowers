@@ -1,10 +1,9 @@
 """Расчёт сроков ухода. Используется и сайтом, и рассылкой напоминаний."""
 import statistics
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from app.config import TZ
-from app.db import get_setting, set_setting
 
 TASKS = {
     "water": "💧 Полив",
@@ -32,13 +31,12 @@ DONE_STATES = {
 
 REPOT_MONTHS = (3, 4)  # пересаживаем только весной
 MONTHS = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
-MAX_TRANSITION_DAYS = 60
 SNOOZE_MAX_DAYS = 14
 
 
 @dataclass(frozen=True)
 class Seasons:
-    """Сезоны — со страницы «Настройки». Месяцы включительно, переход через Новый год допустим."""
+    """Сезоны (используется SEASONS ниже). Месяцы включительно, переход через Новый год допустим."""
     grow_start: int = 4       # сезон роста: летний интервал полива, подкормка
     grow_end: int = 9
     heat_start: int = 10      # отопительный сезон: опрыскивание
@@ -81,29 +79,21 @@ class Seasons:
         return f"{MONTHS[self.heat_start - 1]}–{MONTHS[self.heat_end - 1]}"
 
 
-DEFAULT_SEASONS = Seasons()
-
-
-def load_seasons(db) -> Seasons:
-    saved = get_setting(db, "seasons") or {}
-    known = {k: v for k, v in saved.items() if k in asdict(DEFAULT_SEASONS) and isinstance(v, int)}
-    return Seasons(**known)
-
-
-def save_seasons(db, seasons: Seasons) -> None:
-    set_setting(db, "seasons", asdict(seasons))
+# Сезоны для всех растений: рост апр–сен, отопление окт–апр. Интервал полива и объём меняются
+# не скачком 1 апреля / 1 октября, а плавно за месяц: с середины марта до середины апреля и т.д.
+SEASONS = Seasons(transition_days=30)
 
 
 @dataclass
 class Snapshot:
-    """Всё, что нужно для расчёта сроков: последние отметки, «отложить» и сезоны."""
+    """Всё, что нужно для расчёта сроков: последние отметки, «отложить» и сезоны (в тестах — свои)."""
     last_done: dict[int, dict[str, str]] = field(default_factory=dict)  # plant_id -> kind -> done_at
     snoozed: dict[int, dict[str, str]] = field(default_factory=dict)    # plant_id -> kind -> ГГГГ-ММ-ДД
-    seasons: Seasons = DEFAULT_SEASONS
+    seasons: Seasons = SEASONS
 
 
 def snapshot(db) -> Snapshot:
-    snap = Snapshot(last_done=last_done_map(db), seasons=load_seasons(db))
+    snap = Snapshot(last_done=last_done_map(db))
     for row in db.execute("SELECT plant_id, kind, until FROM snoozes"):
         snap.snoozed.setdefault(row["plant_id"], {})[row["kind"]] = row["until"]
     return snap
@@ -128,7 +118,7 @@ def last_done_map(db) -> dict[int, dict[str, str]]:
     return result
 
 
-def interval_for(plant, kind: str, day: date, seasons: Seasons = DEFAULT_SEASONS) -> tuple[int | None, bool]:
+def interval_for(plant, kind: str, day: date, seasons: Seasons = SEASONS) -> tuple[int | None, bool]:
     """(интервал в днях, задача по сезону в этот день). Интервал None — задача не задана."""
     if kind == "water":
         summer, winter = plant["water_summer_days"], plant["water_winter_days"]
@@ -213,7 +203,7 @@ def planned(plant, snap: Snapshot, day: date, end: date) -> list[tuple[date, str
     return result
 
 
-def water_volume(plant, day: date | None = None, seasons: Seasons = DEFAULT_SEASONS) -> int | None:
+def water_volume(plant, day: date | None = None, seasons: Seasons = SEASONS) -> int | None:
     """Примерный объём полива: в покое растения пьют примерно вдвое меньше."""
     if not plant["water_ml"]:
         return None
@@ -224,7 +214,7 @@ SUGGEST_MIN_GAPS = 3   # подсказываем, только когда ес�
 SUGGEST_LAST_GAPS = 8  # и смотрим только на последние
 
 
-def suggest_interval(plant, water_dates: list[str], day: date, seasons: Seasons = DEFAULT_SEASONS) -> dict | None:
+def suggest_interval(plant, water_dates: list[str], day: date, seasons: Seasons = SEASONS) -> dict | None:
     """Подсказка по истории: обычный промежуток между поливами в текущем сезоне,
     если он заметно отличается от интервала в карточке. None — подсказки нет."""
     grow = seasons.is_grow(day)

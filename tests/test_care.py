@@ -57,7 +57,7 @@ def test_planned_puts_overdue_on_today_then_repeats():
 def test_planned_skips_off_season_tasks():
     plan = care.planned(plant_row(feed_days=30), care.Snapshot(), date(2026, 1, 13), date(2026, 5, 31))
     feed_days = [day for day, kind, _ in plan if kind == "feed"]
-    assert feed_days and all(care.DEFAULT_SEASONS.is_grow(day) for day in feed_days)
+    assert feed_days and all(care.SEASONS.is_grow(day) for day in feed_days)
 
 
 def test_water_volume_halves_in_winter():
@@ -105,7 +105,8 @@ def test_smooth_transition_between_seasons():
     assert 5 < water(date(2026, 9, 25)) < 10
     assert water(date(2026, 4, 1)) == 10    # весной — так же, в обратную сторону
     assert care.water_volume(plant, date(2026, 10, 1), seasons) == 150
-    assert care.interval_for(plant, "water", date(2026, 10, 1)) == (15, True)  # без перехода — скачком
+    assert care.interval_for(plant, "water", date(2026, 10, 1), care.Seasons()) == (15, True)  # без перехода
+    assert care.interval_for(plant, "water", date(2026, 10, 1)) == (10, True)  # по умолчанию — плавно
 
 
 def test_suggest_interval_from_history():

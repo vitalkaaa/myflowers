@@ -1,4 +1,3 @@
-import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -69,12 +68,6 @@ CREATE TABLE IF NOT EXISTS snoozes (
     PRIMARY KEY (plant_id, kind)
 );
 
--- Настройки со страницы «Настройки» (значение — JSON)
-CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
 CREATE INDEX IF NOT EXISTS idx_photos_plant ON photos(plant_id);
 CREATE INDEX IF NOT EXISTS idx_comments_plant ON comments(plant_id);
 CREATE INDEX IF NOT EXISTS idx_events_plant_kind ON events(plant_id, kind);
@@ -143,15 +136,6 @@ def set_snooze(db, plant_id: int, kind: str, until: str | None) -> None:
                    "ON CONFLICT (plant_id, kind) DO UPDATE SET until = excluded.until", (plant_id, kind, until))
 
 
-def get_setting(db, key: str):
-    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-    return json.loads(row["value"]) if row else None
-
-
-def set_setting(db, key: str, value) -> None:
-    db.execute("INSERT INTO settings (key, value) VALUES (?, ?) "
-               "ON CONFLICT (key) DO UPDATE SET value = excluded.value", (key, json.dumps(value)))
-
 
 def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -183,6 +167,7 @@ def init_db() -> None:
     with get_db() as db:
         db.execute("PRAGMA journal_mode = WAL")  # web и напоминания работают с одной БД
         db.executescript(SCHEMA)
+        db.execute("DROP TABLE IF EXISTS settings")  # была у страницы «Настройки»; сезоны теперь в care.SEASONS
         # миграция для баз, созданных до появления новых колонок (имена и типы — константы MIGRATIONS)
         for table, added in MIGRATIONS.items():
             columns = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}

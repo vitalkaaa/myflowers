@@ -42,7 +42,7 @@
 <div class="alert form-alert" id="form-error" role="alert">⚠️ {{ error }}. Введённые данные сохранены — исправьте и нажмите «Сохранить».</div>
 {% endif %}
 
-<form method="post" id="plant-form" {% if plant_id %}action="/plants/{{ plant_id }}/edit"{% else %}action="/plants/new"{% endif %}>
+<form method="post" id="plant-form" enctype="multipart/form-data" {% if plant_id %}action="/plants/{{ plant_id }}/edit"{% else %}action="/plants/new"{% endif %}>
   {{ csrf_field }}
   <div class="form-grid">
     <fieldset class="card"><legend>🌿 Растение</legend>
@@ -50,6 +50,20 @@
       {{ text("species", "Вид (латынь)") }}
       {{ text("location", "Где стоит", "кухня, подоконник") }}
       {{ text("toxic", "Ядовитость") }}
+      {% if not plant_id %}
+      <div class="span-2 photo-field">
+        <label class="photo-pick{{ ' invalid' if error_field == 'photo' }}" for="f-photo">
+          <img class="photo-preview" alt="Выбранное фото" hidden>
+          <span class="photo-empty" aria-hidden="true">📷</span>
+          <span class="photo-text">
+            <span class="photo-title">Фото</span>
+            <span class="muted photo-name">JPEG, PNG или WebP до 10 МБ — можно сразу с камеры</span>
+          </span>
+        </label>
+        <input type="file" name="photo" id="f-photo" accept="image/jpeg,image/png,image/webp" data-photo-preview
+               {% if error_field == 'photo' %}aria-invalid="true" aria-describedby="form-error" autofocus{% endif %}>
+      </div>
+      {% endif %}
     </fieldset>
     <fieldset class="card"><legend>💧 Полив</legend>
       {{ num("water_summer_days", "Интервал " ~ seasons.label() ~ ", дней", True) }}
