@@ -5,12 +5,14 @@
     с кнопками для каждого растения и кнопкой «Всё …»;
   * постоянно опрашивает Telegram (getUpdates) и записывает нажатия кнопок в events.
 
-Проверка: `--test` — тестовое сообщение с кнопкой, `--now` — рассылка на сегодня.
+Проверка: `--test` — тестовое сообщение с кнопкой, `--now` — рассылка на сегодня,
+`--preview [ГГГГ-ММ-ДД]` — пример рассылки на ближайший день с делами (кнопки в базу не пишут).
 """
 import html
 import logging
 import sys
 import time
+from datetime import date, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -29,9 +31,11 @@ def short(name: str) -> str:
     return name if len(name) <= NAME_LEN else name[:NAME_LEN - 1] + "…"
 
 
-def build_messages() -> list[tuple[str, list]]:
-    """[(текст, inline-клавиатура)] — по сообщению на каждое действие, которое пора сделать."""
-    day = care.today()
+def build_messages(day: date | None = None, demo: bool = False) -> list[tuple[str, list]]:
+    """[(текст, inline-клавиатура)] — по сообщению на каждое действие, которое пора сделать в day.
+    demo=True — пример: пометка «🧪 Пример» и кнопки, которые не пишут в базу."""
+    day = day or care.today()
+    prefix = "p" if demo else "d"  # тип кнопки: p — пример, d — настоящая отметка
     with get_db() as db:
         plants = db.execute("SELECT * FROM plants ORDER BY name").fetchall()
         last_done = care.last_done_map(db)
@@ -47,7 +51,8 @@ def build_messages() -> list[tuple[str, list]]:
         items = due.get(kind, [])
         for start in range(0, len(items), PLANTS_PER_MESSAGE):
             chunk = items[start:start + PLANTS_PER_MESSAGE]
-            lines = [f"🌿 <b>{title}</b> · {day.strftime('%d.%m.%Y')}", ""]
+            mark = "🧪 <b>Пример</b> · " if demo else "🌿 "
+            lines = [f"{mark}<b>{title}</b> · {day.strftime('%d.%m.%Y')}", ""]
             buttons = []
             for plant, task in chunk:
                 name = html.escape(short(plant["name"]))
@@ -58,10 +63,10 @@ def build_messages() -> list[tuple[str, list]]:
                 late = f" (просрочено {-task['days_left']} дн.)" if task["days_left"] < 0 else ""
                 lines.append(f"• {name}{amount}{late}")
                 buttons.append({"text": f"{short(plant['name'])} — {care.DONE_STATES[kind]}",
-                                "callback_data": f"d:{plant['id']}:{kind}"})
+                                "callback_data": f"{prefix}:{plant['id']}:{kind}"})
             keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
             if len(buttons) > 1:
-                keyboard.append([{"text": f"✅ Всё {care.DONE_STATES[kind]}", "callback_data": f"a:{kind}"}])
+                keyboard.append([{"text": f"✅ Всё {care.DONE_STATES[kind]}", "callback_data": f"{prefix}a:{kind}"}])
             messages.append(("\n".join(lines), keyboard))
     return messages
 
@@ -86,14 +91,33 @@ def job() -> None:
         log.exception("Ошибка при отправке напоминаний")
 
 
+def preview(day: date | None) -> None:
+    """Пример рассылки: на указанный день или на ближайший (до 60 дней), когда есть дела."""
+    days = [day] if day else [care.today() + timedelta(days=i) for i in range(61)]
+    for candidate in days:
+        messages = build_messages(candidate, demo=True)
+        if messages:
+            sent = sum(send(text, keyboard) for text, keyboard in messages)
+            log.info("Пример на %s: отправлено сообщений %d из %d", candidate, sent, len(messages))
+            return
+    log.info("В ближайшие дни дел нет — пример отправлять не о чем")
+
+
 # ---------- нажатия кнопок ----------
 
-def parse_button(data: str) -> tuple[int, str] | None:
-    """'d:12:water' -> (12, 'water'); всё остальное — None."""
+def parse_button(data: str) -> tuple[int, str, bool] | None:
+    """'d:12:water' -> (12, 'water', False); 'p:…' — то же для примера (demo=True); иначе None."""
     parts = data.split(":")
-    if len(parts) == 3 and parts[0] == "d" and parts[1].isdigit() and len(parts[1]) <= 9 and parts[2] in care.TASKS:
-        return int(parts[1]), parts[2]
+    if len(parts) == 3 and parts[0] in ("d", "p") and parts[1].isdigit() and len(parts[1]) <= 9 \
+            and parts[2] in care.TASKS:
+        return int(parts[1]), parts[2], parts[0] == "p"
     return None
+
+
+def plant_name(plant_id: int) -> str | None:
+    with get_db() as db:
+        row = db.execute("SELECT name FROM plants WHERE id = ?", (plant_id,)).fetchone()
+    return row["name"] if row else None
 
 
 def mark_done(plant_id: int, kind: str) -> str | None:
@@ -136,7 +160,7 @@ def handle_callback(callback: dict) -> None:
 
     keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
     buttons = [button for row in keyboard for button in row]
-    if data.startswith("a:"):
+    if data.split(":")[0] in ("a", "pa"):
         # «Всё полито» — отмечаем растения, кнопки которых ещё не нажаты в этом сообщении
         targets = [b for b in buttons if parse_button(b.get("callback_data", ""))]
     else:
@@ -145,10 +169,10 @@ def handle_callback(callback: dict) -> None:
         answer(callback["id"], "Уже отмечено")
         return
 
-    marked = []
+    marked, demo = [], False
     for button in targets:
-        plant_id, kind = parse_button(button["callback_data"])
-        name = mark_done(plant_id, kind)
+        plant_id, kind, demo = parse_button(button["callback_data"])
+        name = plant_name(plant_id) if demo else mark_done(plant_id, kind)
         button["text"] = f"✅ {short(name)} — {care.DONE_STATES[kind]}" if name else "растение удалено"
         button["callback_data"] = "x"  # уже отмечено
         if name:
@@ -156,10 +180,15 @@ def handle_callback(callback: dict) -> None:
 
     if not any(parse_button(b.get("callback_data", "")) for b in buttons):
         # всё отмечено — убираем кнопку «Всё …»
-        keyboard = [row for row in keyboard if not row[0].get("callback_data", "").startswith("a:")]
+        keyboard = [row for row in keyboard if row[0].get("callback_data", "").split(":")[0] not in ("a", "pa")]
     telegram.call("editMessageReplyMarkup", {"chat_id": message["chat"]["id"], "message_id": message["message_id"],
                                              "reply_markup": {"inline_keyboard": keyboard}})
-    answer(callback["id"], "✅ Отмечено: " + ", ".join(marked) if marked else "Растение не найдено")
+    if not marked:
+        answer(callback["id"], "Растение не найдено")
+    elif demo:
+        answer(callback["id"], "🧪 Это пример — в историю не записано: " + ", ".join(marked))
+    else:
+        answer(callback["id"], "✅ Отмечено: " + ", ".join(marked))
 
 
 def handle_message(message: dict) -> None:
@@ -218,6 +247,15 @@ def main() -> None:
                   "Кнопка ниже проверяет, что нажатия доходят (контейнер reminders должен быть запущен).",
                   [[{"text": "Проверить кнопку", "callback_data": "t"}]])
         log.info("Тестовое сообщение отправлено" if ok else "Тестовое сообщение не отправлено")
+        return
+    if "--preview" in sys.argv:  # пример: как будет выглядеть рассылка в день ухода
+        args = sys.argv[sys.argv.index("--preview") + 1:]
+        try:
+            day = date.fromisoformat(args[0]) if args else None
+        except ValueError:
+            log.error("Дата для --preview в формате ГГГГ-ММ-ДД, например 2026-11-02")
+            sys.exit(1)
+        preview(day)
         return
     if "--now" in sys.argv:  # разовая рассылка прямо сейчас
         job()

@@ -9,6 +9,14 @@ cp env.example .env        # заполнить APP_PASSWORD, SECRET_KEY, TELEGR
 docker compose up -d --build
 ```
 
+На Linux-сервере папку для базы нужно создать заранее и отдать пользователю контейнера
+(uid 1000) — иначе Docker создаст её от root и приложение не сможет записать базу
+(`unable to open database file`):
+
+```bash
+mkdir -p data && sudo chown -R 1000:1000 data
+```
+
 Сайт откроется на http://localhost:8080 (порт меняется в `WEB_PORT`). При первом запуске база (`data/flowers.db`)
 заполняется начальным списком растений и фото из `seed_photos/`.
 
@@ -18,6 +26,14 @@ docker compose up -d --build
 ```bash
 docker compose run --rm --no-deps reminders python -m app.notifier --test
 docker compose run --rm --no-deps reminders python -m app.notifier --now
+```
+
+Посмотреть, как будет выглядеть рассылка в день ухода — на ближайший день с делами
+или на указанную дату. Сообщения помечены «🧪 Пример», кнопки в них в историю не пишут:
+
+```bash
+docker compose run --rm --no-deps reminders python -m app.notifier --preview
+docker compose run --rm --no-deps reminders python -m app.notifier --preview 2026-11-02
 ```
 
 ### Кнопки в Telegram
@@ -30,6 +46,20 @@ docker compose run --rm --no-deps reminders python -m app.notifier --now
 Кнопки срабатывают только в чате из `TELEGRAM_CHAT_ID`. В личке с ботом их видите только вы;
 если указать канал, отмечать полив сможет любой, кто может нажимать кнопки в этом канале.
 Свой chat ID бот пришлёт в ответ на `/start`.
+
+## Доступ из интернета
+
+По умолчанию сайт слушает только 127.0.0.1. На сервере в `.env`:
+
+```
+WEB_BIND=0.0.0.0
+WEB_PORT=80
+APP_PASSWORD=<длинный случайный пароль>
+```
+
+Затем `docker compose up -d --force-recreate` — сайт откроется на `http://<IP сервера>`
+(порт 80 должен быть открыт в security group). Без HTTPS пароль и cookie передаются
+открытым текстом — для постоянного использования лучше домен и HTTPS.
 
 ## Что умеет
 
@@ -96,5 +126,5 @@ app/repotting.py — рекомендации по пересадке по ви�
   перекодируется в JPEG, поэтому EXIF с геолокацией удаляется.
 - SQL только параметризованный. Токен бота в логи не попадает.
 - Заголовки CSP, nosniff, запрет встраивания во frame.
-- Порт по умолчанию слушает только 127.0.0.1. Для доступа из интернета ставьте
-  reverse-proxy с HTTPS (Caddy, nginx) и `COOKIE_SECURE=true`.
+- По умолчанию сайт слушает только 127.0.0.1; наружу — через `WEB_BIND=0.0.0.0`.
+  При слабом пароле приложение пишет предупреждение в лог.

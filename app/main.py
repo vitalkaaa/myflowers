@@ -17,6 +17,11 @@ from app.seed import fill_missing, seed_if_empty
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 config.require("APP_USERNAME", "APP_PASSWORD", "SECRET_KEY")
+if len(config.APP_PASSWORD) < 12 or config.APP_PASSWORD.lower() in (config.APP_USERNAME.lower(), "password"):
+    # сам пароль в лог не пишем
+    logging.getLogger("app").warning(
+        "Слабый APP_PASSWORD (короче 12 символов или совпадает с логином). "
+        "Перед доступом из интернета задайте длинный случайный пароль в .env")
 init_db()
 seed_if_empty()
 fill_missing()

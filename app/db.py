@@ -120,7 +120,14 @@ def get_db():
 
 
 def init_db() -> None:
-    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    folder = os.path.dirname(DB_PATH) or "."
+    os.makedirs(folder, exist_ok=True)
+    # SQLite в режиме WAL создаёт рядом с базой служебные файлы — нужна запись и в папку, и в сам файл
+    if not os.access(folder, os.W_OK) or (os.path.exists(DB_PATH) and not os.access(DB_PATH, os.W_OK)):
+        raise RuntimeError(
+            f"Нет прав на запись в {folder} (процесс работает с uid {os.getuid()}). "
+            f"На сервере выполните в папке проекта: sudo chown -R {os.getuid()}:{os.getgid()} data"
+        )
     with get_db() as db:
         db.execute("PRAGMA journal_mode = WAL")  # web и напоминания работают с одной БД
         db.executescript(SCHEMA)
