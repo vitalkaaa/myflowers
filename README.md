@@ -177,7 +177,7 @@ deploy.sh        — выкладка на сервер
 Тесты работают с временной БД и тестовыми настройками — `.env` и `data/` не трогают.
 
 ```bash
-pip install -r requirements.txt pytest
+pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 

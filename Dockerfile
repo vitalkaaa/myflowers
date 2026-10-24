@@ -1,10 +1,14 @@
+# syntax=docker/dockerfile:1
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /app
 
+# Зависимости — отдельным слоем до кода: пока requirements.txt не меняется, слой берётся из кэша.
+# Если слой всё же пересобирается (изменились зависимости, Docker почистил кэш сборки),
+# скачанные пакеты берутся из кэша pip на сервере. В образ этот кэш не попадает.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
 
 COPY app ./app
 COPY seed_photos ./seed_photos
