@@ -1,14 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ plant.name }}{% endblock %}
 
-{% macro status(t) -%}
-  {%- if not t.active -%}<span class="badge badge-off">не сезон</span>
-  {%- elif t.days_left < 0 -%}<span class="badge badge-due">просрочено {{ -t.days_left }} дн.</span>
-  {%- elif t.days_left == 0 -%}<span class="badge badge-due">сегодня</span>
-  {%- elif t.days_left <= 2 -%}<span class="badge badge-soon">{{ days_left_text(t.days_left) }}</span>
-  {%- else -%}<span class="badge badge-ok">{{ days_left_text(t.days_left) }}</span>
-  {%- endif -%}
-{%- endmacro %}
+{% from "_macros.html" import status %}
 
 {% block content %}
 <div class="crumbs"><a href="/">← Все растения</a></div>
@@ -25,11 +18,11 @@
           <div class="thumb-actions">
             {% if not ph.is_main %}
             <form method="post" action="/photos/{{ ph.id }}/main">
-              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon-btn" title="Сделать главным">★</button>
+              {{ csrf_field }}<button class="icon-btn" title="Сделать главным">★</button>
             </form>
             {% endif %}
             <form method="post" action="/photos/{{ ph.id }}/delete" data-confirm="Удалить фото?">
-              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon-btn danger" title="Удалить">✕</button>
+              {{ csrf_field }}<button class="icon-btn danger" title="Удалить">✕</button>
             </form>
           </div>
         </div>
@@ -40,7 +33,7 @@
       <div class="main-photo empty">🪴</div>
     {% endif %}
     <form class="upload" method="post" action="/plants/{{ plant.id }}/photos" enctype="multipart/form-data">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {{ csrf_field }}
       <label class="btn btn-sm btn-ghost">📷 Добавить фото
         <input type="file" name="file" accept="image/jpeg,image/png,image/webp" data-autosubmit>
       </label>
@@ -59,14 +52,16 @@
     <div class="tasks">
       {% for t in tasks %}
       <div class="task {{ 'due' if t.due }} {{ 'off' if not t.active }}">
-        <div class="task-head"><span>{{ t.title }}</span>{{ status(t) }}</div>
+        <div class="task-head"><span>{{ t.title }}</span>{{ status(t.days_left, t.active) }}</div>
         <progress value="{{ [t.interval - t.days_left, t.interval]|min if t.days_left < t.interval else 0 }}" max="{{ t.interval }}"></progress>
         <div class="muted">
           {% if t.kind == "repot" %}раз в {{ (t.interval / 365)|round|int }} г.{% else %}раз в {{ t.interval }} дн.{% endif %}
           · последний: {{ t.last or "—" }}
         </div>
-        <form method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}">
-          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
+        <form class="done-form" method="post" action="/plants/{{ plant.id }}/done/{{ t.kind }}">
+          {{ csrf_field }}<button class="btn btn-sm {{ '' if t.due else 'btn-ghost' }}">✓ {{ t.done_label }}</button>
+          <input type="date" name="day" value="{{ today }}" min="{{ min_day }}" max="{{ today }}"
+                 aria-label="Дата выполнения" title="Если сделали раньше — выберите дату">
         </form>
       </div>
       {% endfor %}
@@ -75,7 +70,7 @@
     <div class="plant-actions">
       <a class="btn btn-sm btn-ghost" href="/plants/{{ plant.id }}/edit">✎ Редактировать</a>
       <form method="post" action="/plants/{{ plant.id }}/delete" data-confirm="Удалить растение вместе с фото и дневником?">
-        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn btn-sm btn-danger">Удалить</button>
+        {{ csrf_field }}<button class="btn btn-sm btn-danger">Удалить</button>
       </form>
     </div>
   </div>
@@ -146,7 +141,7 @@
   <div class="card section" id="comments">
     <h2>📔 Дневник</h2>
     <form class="diary-form" method="post" action="/plants/{{ plant.id }}/comments">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {{ csrf_field }}
       <textarea name="text" rows="3" maxlength="5000" placeholder="Что происходит: новые листья, пятна, вредители, цветение…" required></textarea>
       <button class="btn-sm">Добавить запись</button>
     </form>
@@ -157,7 +152,7 @@
         <div class="meta">
           <span>{{ c.created_at[:16].replace("T", " ") }}{% if c.processed_at %} · 🤖 обработано{% endif %}</span>
           <form method="post" action="/comments/{{ c.id }}/delete" data-confirm="Удалить запись?">
-            <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-link">удалить</button>
+            {{ csrf_field }}<button class="btn-link">удалить</button>
           </form>
         </div>
         <div class="text pre">{{ c.text }}</div>
@@ -177,7 +172,7 @@
       <li>
         <span>{{ task_titles[e.kind] }} <span class="muted">· {{ e.done_at[:16].replace("T", " ") }}</span></span>
         <form method="post" action="/events/{{ e.id }}/delete" data-confirm="Удалить отметку?">
-          <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn-link">отменить</button>
+          {{ csrf_field }}<button class="btn-link">отменить</button>
         </form>
       </li>
       {% endfor %}

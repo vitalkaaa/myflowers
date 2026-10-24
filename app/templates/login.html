@@ -7,7 +7,7 @@
     <h1>Дневник растений</h1>
     <p>Войдите, чтобы продолжить</p>
     {% if error %}<div class="alert">{{ error }}</div>{% endif %}
-    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {{ csrf_field }}
     <label>Логин <input name="username" autocomplete="username" required autofocus></label>
     <label>Пароль <input name="password" type="password" autocomplete="current-password" required></label>
     <button>Войти</button>

@@ -100,10 +100,3 @@ REPOTTING = {
 • Как пересаживать — перевалкой, ствол-шишку не заглублять; работать в перчатках — все части ядовиты.
 • После пересадки — не пересаживать во время роста новых листьев; подкармливать не раньше чем через 2 месяца.""",
 }
-
-
-def repotting_for(species: str) -> str:
-    for key, text in REPOTTING.items():
-        if species.startswith(key):
-            return text
-    return ""

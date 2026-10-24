@@ -132,10 +132,3 @@ DISEASES = {
         "если ствол мягкий — вычистить гниль, обработать фунгицидом и держать сухо.",
     ]),
 }
-
-
-def diseases_for(species: str) -> str:
-    for key, text in DISEASES.items():
-        if species.startswith(key):
-            return text
-    return ""

@@ -8,14 +8,7 @@
   </a></th>
 {%- endmacro %}
 
-{% macro status(days, active=True) -%}
-  {%- if not active -%}<span class="badge badge-off">не сезон</span>
-  {%- elif days < 0 -%}<span class="badge badge-due">просрочено {{ -days }} дн.</span>
-  {%- elif days == 0 -%}<span class="badge badge-due">сегодня</span>
-  {%- elif days <= 2 -%}<span class="badge badge-soon">{{ days_left_text(days) }}</span>
-  {%- else -%}<span class="badge badge-ok">{{ days_left_text(days) }}</span>
-  {%- endif -%}
-{%- endmacro %}
+{% from "_macros.html" import status %}
 
 {% set sort_options = [
   ("next_water", "Следующий полив"),
@@ -89,7 +82,7 @@
             {% if p.water_ml %}<span class="muted ml">≈ {{ water_volume(p) }} мл</span>{% endif %}
             {% if p.next_water <= 0 %}
             <form method="post" action="/plants/{{ p.id }}/done/water">
-              <input type="hidden" name="csrf" value="{{ csrf }}">
+              {{ csrf_field }}
               <input type="hidden" name="back" value="index">
               <button class="btn btn-sm">💧 Полил(а)</button>
             </form>

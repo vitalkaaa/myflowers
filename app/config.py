@@ -21,6 +21,9 @@ TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY", "")  # например http://host
 REMINDER_CRON = os.getenv("REMINDER_CRON", "0 19 * * *")
 BASE_URL = os.getenv("BASE_URL", "").rstrip("/")  # для ссылок на карточки в Telegram
 
+BACKUP_CRON = os.getenv("BACKUP_CRON", "30 3 * * *")  # резервная копия БД каждую ночь
+BACKUP_KEEP = max(1, int(os.getenv("BACKUP_KEEP", "14")))
+
 
 def require(*names: str) -> None:
     missing = [name for name in names if not os.getenv(name)]

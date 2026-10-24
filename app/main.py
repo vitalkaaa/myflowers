@@ -1,32 +1,41 @@
 import asyncio
 import logging
-from datetime import date, timedelta
+from contextlib import asynccontextmanager
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import care, config, photos
-from app.auth import (LoginRequired, check_credentials, check_csrf, csrf_token,
-                      login_redirect, require_login)
-from app.db import PLANT_FIELDS, add_event, add_photo, get_db, init_db, insert_plant, update_plant
+from app import auth, care, config, photos
+from app.auth import LoginRequired, check_credentials, check_csrf, csrf_token, login_redirect, require_login
+from app.db import (INT_FIELDS, LONG_TEXT_FIELDS, PLANT_FIELDS, add_photo, get_db, init_db, insert_plant,
+                    record_done, update_plant)
 from app.seed import fill_missing, seed_if_empty
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-config.require("APP_USERNAME", "APP_PASSWORD", "SECRET_KEY")
-if len(config.APP_PASSWORD) < 12 or config.APP_PASSWORD.lower() in (config.APP_USERNAME.lower(), "password"):
-    # сам пароль в лог не пишем
-    logging.getLogger("app").warning(
-        "Слабый APP_PASSWORD (короче 12 символов или совпадает с логином). "
-        "Перед доступом из интернета задайте длинный случайный пароль в .env")
-init_db()
-seed_if_empty()
-fill_missing()
 
-app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """При старте сервера: проверка настроек, создание БД и начальный список растений."""
+    config.require("APP_USERNAME", "APP_PASSWORD", "SECRET_KEY")
+    if len(config.APP_PASSWORD) < 12 or config.APP_PASSWORD.lower() in (config.APP_USERNAME.lower(), "password"):
+        # сам пароль в лог не пишем
+        logging.getLogger("app").warning(
+            "Слабый APP_PASSWORD (короче 12 символов или совпадает с логином). "
+            "Перед доступом из интернета задайте длинный случайный пароль в .env")
+    init_db()
+    seed_if_empty()
+    fill_missing()
+    yield
+
+
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=config.SECRET_KEY,
@@ -42,7 +51,7 @@ templates = Jinja2Templates(directory=APP_DIR / "templates")
 templates.env.globals["days_left_text"] = care.days_left_text
 templates.env.globals["water_volume"] = care.water_volume
 
-auth = [Depends(require_login)]
+login_required = [Depends(require_login)]
 
 
 @app.middleware("http")
@@ -57,8 +66,10 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-def render(request: Request, name: str, **context):
-    return templates.TemplateResponse(request, name, {"csrf": csrf_token(request), **context})
+def render(request: Request, name: str, status_code: int = 200, **context):
+    # в шаблонах формы пишут {{ csrf_field }}; токен экранируется, хотя и так состоит из [A-Za-z0-9_-]
+    field = Markup('<input type="hidden" name="csrf" value="{}">').format(csrf_token(request))
+    return templates.TemplateResponse(request, name, {"csrf_field": field, **context}, status_code=status_code)
 
 
 def verify_csrf(request: Request, token: str) -> None:
@@ -70,11 +81,15 @@ def redirect(url: str) -> RedirectResponse:
     return RedirectResponse(url, status_code=303)
 
 
+def find_or_404(db, sql: str, row_id: int, message: str = "Не найдено"):
+    row = db.execute(sql, (row_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, message)
+    return row
+
+
 def get_plant(db, plant_id: int):
-    plant = db.execute("SELECT * FROM plants WHERE id = ?", (plant_id,)).fetchone()
-    if not plant:
-        raise HTTPException(404, "Растение не найдено")
-    return plant
+    return find_or_404(db, "SELECT * FROM plants WHERE id = ?", plant_id, "Растение не найдено")
 
 
 # ---------- вход ----------
@@ -84,12 +99,22 @@ def login_page(request: Request):
     return render(request, "login.html", error=None)
 
 
+FAILED_LOGIN_DELAY = 1  # секунд
+
+
 @app.post("/login")
 async def login(request: Request, username: str = Form(""), password: str = Form(""), csrf: str = Form("")):
     verify_csrf(request, csrf)
+    ip = request.client.host if request.client else "unknown"
+    # проверка и запись неудачи идут без await между ними — параллельные запросы лимит не обойдут
+    if auth.login_blocked(ip):
+        return render(request, "login.html", status_code=429,
+                      error=f"Слишком много попыток входа. Попробуйте через {auth.LOGIN_WINDOW // 60} минут")
     if not check_credentials(username, password):
-        await asyncio.sleep(1)  # замедляем перебор паролей
+        auth.login_failed(ip)
+        await asyncio.sleep(FAILED_LOGIN_DELAY)  # замедляем перебор паролей
         return render(request, "login.html", error="Неверный логин или пароль")
+    auth.login_succeeded(ip)
     request.session.clear()  # новая сессия после входа (защита от фиксации сессии)
     request.session["user"] = username
     return redirect("/")
@@ -130,7 +155,7 @@ def parse_sort(raw: str) -> list[tuple[str, bool]]:
     return result or [("next_water", False)]
 
 
-@app.get("/", dependencies=auth)
+@app.get("/", dependencies=login_required)
 def index(request: Request, sort: str = ""):
     day = care.today()
     with get_db() as db:
@@ -176,8 +201,7 @@ def parse_plant_form(form) -> dict:
     values = {}
     for field in PLANT_FIELDS:
         raw = (form.get(field) or "").strip()
-        if field in ("water_summer_days", "water_winter_days", "water_ml",
-                     "feed_days", "repot_years", "spray_days", "wipe_days"):
+        if field in INT_FIELDS:
             if not raw:
                 values[field] = None
                 continue
@@ -185,7 +209,7 @@ def parse_plant_form(form) -> dict:
                 raise HTTPException(400, f"Поле {field}: нужно целое число от 1 до 5000")
             values[field] = int(raw)
         else:
-            values[field] = raw[:10000] if field in ("notes", "facts", "diseases", "repotting") else raw[:2000]
+            values[field] = raw[:10000] if field in LONG_TEXT_FIELDS else raw[:2000]
     if not values["name"]:
         raise HTTPException(400, "Укажите название")
     if not values["water_summer_days"] or not values["water_winter_days"]:
@@ -193,12 +217,12 @@ def parse_plant_form(form) -> dict:
     return values
 
 
-@app.get("/plants/new", dependencies=auth)
+@app.get("/plants/new", dependencies=login_required)
 def new_plant_page(request: Request):
     return render(request, "plant_form.html", plant=None)
 
 
-@app.post("/plants/new", dependencies=auth)
+@app.post("/plants/new", dependencies=login_required)
 async def create_plant(request: Request):
     form = await request.form()
     verify_csrf(request, form.get("csrf", ""))
@@ -208,7 +232,7 @@ async def create_plant(request: Request):
     return redirect(f"/plants/{plant_id}")
 
 
-@app.get("/plants/{plant_id}", dependencies=auth)
+@app.get("/plants/{plant_id}", dependencies=login_required)
 def plant_page(request: Request, plant_id: int):
     with get_db() as db:
         plant = get_plant(db, plant_id)
@@ -223,19 +247,21 @@ def plant_page(request: Request, plant_id: int):
             "SELECT * FROM events WHERE plant_id = ? ORDER BY done_at DESC LIMIT 30", (plant_id,)
         ).fetchall()
         last_done = care.last_done_map(db).get(plant_id, {})
-    tasks = care.plant_tasks(plant, last_done, care.today())
+    today = care.today()
+    tasks = care.plant_tasks(plant, last_done, today)
     return render(request, "plant.html", plant=plant, photos=plant_photos, comments=comments,
-                  events=events, tasks=tasks, task_titles=care.TASKS)
+                  events=events, tasks=tasks, task_titles=care.TASKS,
+                  today=today, min_day=today - timedelta(days=BACKDATE_DAYS))
 
 
-@app.get("/plants/{plant_id}/edit", dependencies=auth)
+@app.get("/plants/{plant_id}/edit", dependencies=login_required)
 def edit_plant_page(request: Request, plant_id: int):
     with get_db() as db:
         plant = get_plant(db, plant_id)
     return render(request, "plant_form.html", plant=plant)
 
 
-@app.post("/plants/{plant_id}/edit", dependencies=auth)
+@app.post("/plants/{plant_id}/edit", dependencies=login_required)
 async def edit_plant(request: Request, plant_id: int):
     form = await request.form()
     verify_csrf(request, form.get("csrf", ""))
@@ -246,7 +272,7 @@ async def edit_plant(request: Request, plant_id: int):
     return redirect(f"/plants/{plant_id}")
 
 
-@app.post("/plants/{plant_id}/delete", dependencies=auth)
+@app.post("/plants/{plant_id}/delete", dependencies=login_required)
 def delete_plant(request: Request, plant_id: int, csrf: str = Form("")):
     verify_csrf(request, csrf)
     with get_db() as db:
@@ -254,26 +280,38 @@ def delete_plant(request: Request, plant_id: int, csrf: str = Form("")):
     return redirect("/")
 
 
-@app.post("/plants/{plant_id}/done/{kind}", dependencies=auth)
-def mark_done(request: Request, plant_id: int, kind: str, csrf: str = Form(""), back: str = Form("")):
+@app.post("/plants/{plant_id}/done/{kind}", dependencies=login_required)
+def mark_done(request: Request, plant_id: int, kind: str, csrf: str = Form(""), back: str = Form(""),
+              day: str = Form("")):
     verify_csrf(request, csrf)
     if kind not in care.TASKS:
         raise HTTPException(400, "Неизвестное действие")
     with get_db() as db:
         get_plant(db, plant_id)
-        add_event(db, plant_id, kind, care.now_str())
+        record_done(db, plant_id, kind, done_at(day))
     return redirect(back_url(back, plant_id))
 
 
-@app.post("/events/{event_id}/delete", dependencies=auth)
+@app.post("/events/{event_id}/delete", dependencies=login_required)
 def delete_event(request: Request, event_id: int, csrf: str = Form(""), back: str = Form("")):
     verify_csrf(request, csrf)
     with get_db() as db:
-        row = db.execute("SELECT plant_id FROM events WHERE id = ?", (event_id,)).fetchone()
-        if not row:
-            raise HTTPException(404)
+        row = find_or_404(db, "SELECT plant_id FROM events WHERE id = ?", event_id)
         db.execute("DELETE FROM events WHERE id = ?", (event_id,))
     return redirect(back_url(back, row["plant_id"]))
+
+
+BACKDATE_DAYS = 365  # насколько назад можно отметить уход
+
+
+def done_at(day: str) -> str:
+    """Время отметки: сейчас, а если выбран прошедший день — полдень того дня."""
+    if not day or day == care.today().isoformat():
+        return care.now_str()
+    parsed = parse_date(day)
+    if not parsed or not care.today() - timedelta(days=BACKDATE_DAYS) <= parsed < care.today():
+        raise HTTPException(400, f"Дата — не в будущем и не раньше чем {BACKDATE_DAYS} дней назад")
+    return datetime.combine(parsed, time(12), config.TZ).isoformat(timespec="seconds")
 
 
 def back_url(back: str, plant_id: int) -> str:
@@ -304,7 +342,7 @@ EVENT_SQL = """SELECT e.id, e.kind, e.done_at, p.id AS plant_id, p.name
                FROM events e JOIN plants p ON p.id = e.plant_id"""
 
 
-@app.get("/history", dependencies=auth)
+@app.get("/history", dependencies=login_required)
 def history_page(request: Request, plant: int = 0, kind: str = "", page: int = 1):
     page = max(1, min(page, 10000))
     where, params = [], []
@@ -328,7 +366,7 @@ def history_page(request: Request, plant: int = 0, kind: str = "", page: int = 1
                   has_more=len(rows) > HISTORY_PAGE, task_titles=care.TASKS)
 
 
-@app.get("/calendar", dependencies=auth)
+@app.get("/calendar", dependencies=login_required)
 def calendar_page(request: Request, month: str = "", day: str = ""):
     today = care.today()
     selected = parse_date(day)
@@ -369,7 +407,7 @@ def calendar_page(request: Request, month: str = "", day: str = ""):
 
 # ---------- фото ----------
 
-@app.post("/plants/{plant_id}/photos", dependencies=auth)
+@app.post("/plants/{plant_id}/photos", dependencies=login_required)
 async def upload_photo(request: Request, plant_id: int, file: UploadFile, csrf: str = Form("")):
     verify_csrf(request, csrf)
     raw = await file.read(photos.MAX_UPLOAD_BYTES + 1)
@@ -383,42 +421,36 @@ async def upload_photo(request: Request, plant_id: int, file: UploadFile, csrf: 
     return redirect(f"/plants/{plant_id}")
 
 
-def photo_response(photo_id: int, column: str) -> Response:
+def photo_response(sql: str, photo_id: int) -> Response:
     with get_db() as db:
-        row = db.execute(f"SELECT {column} FROM photos WHERE id = ?", (photo_id,)).fetchone()
-    if not row:
-        raise HTTPException(404)
+        row = find_or_404(db, sql, photo_id)
     return Response(row[0], media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
-@app.get("/photos/{photo_id}", dependencies=auth)
+@app.get("/photos/{photo_id}", dependencies=login_required)
 def get_photo(photo_id: int):
-    return photo_response(photo_id, "data")
+    return photo_response("SELECT data FROM photos WHERE id = ?", photo_id)
 
 
-@app.get("/photos/{photo_id}/thumb", dependencies=auth)
+@app.get("/photos/{photo_id}/thumb", dependencies=login_required)
 def get_thumb(photo_id: int):
-    return photo_response(photo_id, "thumb")
+    return photo_response("SELECT thumb FROM photos WHERE id = ?", photo_id)
 
 
-@app.post("/photos/{photo_id}/main", dependencies=auth)
+@app.post("/photos/{photo_id}/main", dependencies=login_required)
 def set_main_photo(request: Request, photo_id: int, csrf: str = Form("")):
     verify_csrf(request, csrf)
     with get_db() as db:
-        row = db.execute("SELECT plant_id FROM photos WHERE id = ?", (photo_id,)).fetchone()
-        if not row:
-            raise HTTPException(404)
+        row = find_or_404(db, "SELECT plant_id FROM photos WHERE id = ?", photo_id)
         db.execute("UPDATE photos SET is_main = (id = ?) WHERE plant_id = ?", (photo_id, row["plant_id"]))
     return redirect(f"/plants/{row['plant_id']}")
 
 
-@app.post("/photos/{photo_id}/delete", dependencies=auth)
+@app.post("/photos/{photo_id}/delete", dependencies=login_required)
 def delete_photo(request: Request, photo_id: int, csrf: str = Form("")):
     verify_csrf(request, csrf)
     with get_db() as db:
-        row = db.execute("SELECT plant_id, is_main FROM photos WHERE id = ?", (photo_id,)).fetchone()
-        if not row:
-            raise HTTPException(404)
+        row = find_or_404(db, "SELECT plant_id, is_main FROM photos WHERE id = ?", photo_id)
         db.execute("DELETE FROM photos WHERE id = ?", (photo_id,))
         if row["is_main"]:  # главным становится самое свежее из оставшихся
             db.execute("""UPDATE photos SET is_main = 1 WHERE id = (
@@ -429,7 +461,7 @@ def delete_photo(request: Request, photo_id: int, csrf: str = Form("")):
 
 # ---------- комментарии ----------
 
-@app.post("/plants/{plant_id}/comments", dependencies=auth)
+@app.post("/plants/{plant_id}/comments", dependencies=login_required)
 def add_comment(request: Request, plant_id: int, text: str = Form(""), csrf: str = Form("")):
     verify_csrf(request, csrf)
     text = text.strip()[:5000]
@@ -441,12 +473,10 @@ def add_comment(request: Request, plant_id: int, text: str = Form(""), csrf: str
     return redirect(f"/plants/{plant_id}#comments")
 
 
-@app.post("/comments/{comment_id}/delete", dependencies=auth)
+@app.post("/comments/{comment_id}/delete", dependencies=login_required)
 def delete_comment(request: Request, comment_id: int, csrf: str = Form("")):
     verify_csrf(request, csrf)
     with get_db() as db:
-        row = db.execute("SELECT plant_id FROM comments WHERE id = ?", (comment_id,)).fetchone()
-        if not row:
-            raise HTTPException(404)
+        row = find_or_404(db, "SELECT plant_id FROM comments WHERE id = ?", comment_id)
         db.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
     return redirect(f"/plants/{row['plant_id']}#comments")

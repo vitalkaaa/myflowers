@@ -155,6 +155,9 @@ progress::-moz-progress-bar { background: var(--green); }
 .task.due progress::-webkit-progress-value { background: var(--red); }
 .task.due progress::-moz-progress-bar { background: var(--red); }
 .task button { align-self: flex-start; }
+.done-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.done-form input[type=date] { font: inherit; font-size: 12.5px; padding: 3px 6px; border: 1px solid var(--line);
+  border-radius: 8px; background: var(--surface); color: inherit; }
 
 .params { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
 .param { padding: 14px 16px; border-radius: 14px; background: var(--surface-2); border: 1px solid var(--line); }

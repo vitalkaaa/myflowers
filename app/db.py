@@ -70,6 +70,9 @@ PLANT_FIELDS = (
     "feed_days", "repot_years", "spray_days", "wipe_days",
     "toxic", "notes", "facts", "diseases", "repotting",
 )
+INT_FIELDS = ("water_summer_days", "water_winter_days", "water_ml",
+              "feed_days", "repot_years", "spray_days", "wipe_days")
+LONG_TEXT_FIELDS = ("notes", "facts", "diseases", "repotting")  # до 10000 символов, остальной текст — до 2000
 _PLANT_COLUMNS = ", ".join(PLANT_FIELDS)
 _PLANT_PARAMS = ", ".join(f":{f}" for f in PLANT_FIELDS)
 _PLANT_SET = ", ".join(f"{f} = :{f}" for f in PLANT_FIELDS)
@@ -97,7 +100,14 @@ def add_photo(db, plant_id: int, data: bytes, thumb: bytes, created_at: str) -> 
     )
 
 
-def add_event(db, plant_id: int, kind: str, done_at: str) -> None:
+def record_done(db, plant_id: int, kind: str, done_at: str) -> None:
+    """Отмечает выполненный уход. Повторная отметка того же действия в тот же день
+    (двойной клик, кнопка в двух сообщениях) второго события не создаёт."""
+    if db.execute(
+        "SELECT 1 FROM events WHERE plant_id = ? AND kind = ? AND substr(done_at, 1, 10) = ?",
+        (plant_id, kind, done_at[:10]),
+    ).fetchone():
+        return
     db.execute("INSERT INTO events (plant_id, kind, done_at) VALUES (?, ?, ?)", (plant_id, kind, done_at))
 
 

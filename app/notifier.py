@@ -1,9 +1,10 @@
 """Напоминания в Telegram с кнопками «<растение> — полито».
 
-Запускается отдельным контейнером: `python -m app.notifier`. Процесс делает две вещи:
+Запускается отдельным контейнером: `python -m app.notifier`. Процесс:
   * по расписанию REMINDER_CRON шлёт по сообщению на каждое действие (полив, подкормка…)
     с кнопками для каждого растения и кнопкой «Всё …»;
-  * постоянно опрашивает Telegram (getUpdates) и записывает нажатия кнопок в events.
+  * постоянно опрашивает Telegram (getUpdates) и записывает нажатия кнопок в events;
+  * по расписанию BACKUP_CRON делает резервную копию БД (см. app/backup.py).
 
 Проверка: `--test` — тестовое сообщение с кнопкой, `--now` — рассылка на сегодня,
 `--preview [ГГГГ-ММ-ДД]` — пример рассылки на ближайший день с делами (кнопки в базу не пишут).
@@ -17,8 +18,8 @@ from datetime import date, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app import care, config, telegram
-from app.db import add_event, get_db, init_db
+from app import backup, care, config, telegram
+from app.db import get_db, init_db, record_done
 
 log = logging.getLogger("notifier")
 PLANTS_PER_MESSAGE = 30  # в Telegram до 100 кнопок и 4096 символов в сообщении
@@ -35,7 +36,7 @@ def build_messages(day: date | None = None, demo: bool = False) -> list[tuple[st
     """[(текст, inline-клавиатура)] — по сообщению на каждое действие, которое пора сделать в day.
     demo=True — пример: пометка «🧪 Пример» и кнопки, которые не пишут в базу."""
     day = day or care.today()
-    prefix = "p" if demo else "d"  # тип кнопки: p — пример, d — настоящая отметка
+    prefix = "p" if demo else "d"  # тип кнопки: p — пример, d — настоящая отметка; da/pa — «Всё …»
     with get_db() as db:
         plants = db.execute("SELECT * FROM plants ORDER BY name").fetchall()
         last_done = care.last_done_map(db)
@@ -114,26 +115,18 @@ def parse_button(data: str) -> tuple[int, str, bool] | None:
     return None
 
 
-def plant_name(plant_id: int) -> str | None:
-    with get_db() as db:
-        row = db.execute("SELECT name FROM plants WHERE id = ?", (plant_id,)).fetchone()
-    return row["name"] if row else None
+def is_all_button(data: str) -> bool:
+    """Кнопка «Всё …»: 'da:water' — настоящая, 'pa:water' — в примере."""
+    return data.split(":")[0] in ("da", "pa")
 
 
-def mark_done(plant_id: int, kind: str) -> str | None:
-    """Записывает событие. Возвращает название растения или None, если растения нет.
-    Повторное нажатие в тот же день вторую отметку не создаёт."""
+def mark_plant(plant_id: int, kind: str, demo: bool) -> str | None:
+    """Отмечает уход и возвращает название растения (None — растения нет). В примере ничего не пишет."""
     with get_db() as db:
         plant = db.execute("SELECT name FROM plants WHERE id = ?", (plant_id,)).fetchone()
-        if not plant:
-            return None
-        done_today = db.execute(
-            "SELECT 1 FROM events WHERE plant_id = ? AND kind = ? AND substr(done_at, 1, 10) = ?",
-            (plant_id, kind, care.today().isoformat()),
-        ).fetchone()
-        if not done_today:
-            add_event(db, plant_id, kind, care.now_str())
-    return plant["name"]
+        if plant and not demo:
+            record_done(db, plant_id, kind, care.now_str())
+    return plant["name"] if plant else None
 
 
 def is_our_chat(chat: dict) -> bool:
@@ -160,7 +153,7 @@ def handle_callback(callback: dict) -> None:
 
     keyboard = message.get("reply_markup", {}).get("inline_keyboard", [])
     buttons = [button for row in keyboard for button in row]
-    if data.split(":")[0] in ("a", "pa"):
+    if is_all_button(data):
         # «Всё полито» — отмечаем растения, кнопки которых ещё не нажаты в этом сообщении
         targets = [b for b in buttons if parse_button(b.get("callback_data", ""))]
     else:
@@ -172,7 +165,7 @@ def handle_callback(callback: dict) -> None:
     marked, demo = [], False
     for button in targets:
         plant_id, kind, demo = parse_button(button["callback_data"])
-        name = plant_name(plant_id) if demo else mark_done(plant_id, kind)
+        name = mark_plant(plant_id, kind, demo)
         button["text"] = f"✅ {short(name)} — {care.DONE_STATES[kind]}" if name else "растение удалено"
         button["callback_data"] = "x"  # уже отмечено
         if name:
@@ -180,7 +173,7 @@ def handle_callback(callback: dict) -> None:
 
     if not any(parse_button(b.get("callback_data", "")) for b in buttons):
         # всё отмечено — убираем кнопку «Всё …»
-        keyboard = [row for row in keyboard if row[0].get("callback_data", "").split(":")[0] not in ("a", "pa")]
+        keyboard = [row for row in keyboard if not is_all_button(row[0].get("callback_data", ""))]
     telegram.call("editMessageReplyMarkup", {"chat_id": message["chat"]["id"], "message_id": message["message_id"],
                                              "reply_markup": {"inline_keyboard": keyboard}})
     if not marked:
@@ -263,8 +256,10 @@ def main() -> None:
 
     scheduler = BackgroundScheduler(timezone=config.TZ)
     scheduler.add_job(job, CronTrigger.from_crontab(config.REMINDER_CRON, timezone=config.TZ))
+    scheduler.add_job(backup.job, CronTrigger.from_crontab(config.BACKUP_CRON, timezone=config.TZ))
     scheduler.start()
-    log.info("Расписание напоминаний: %s (%s); жду нажатий кнопок", config.REMINDER_CRON, config.TZ)
+    log.info("Расписание напоминаний: %s, резервных копий: %s (%s); жду нажатий кнопок",
+             config.REMINDER_CRON, config.BACKUP_CRON, config.TZ)
     poll_forever()
 
 

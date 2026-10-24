@@ -18,7 +18,7 @@
       <a class="nav-link" href="/history" title="История">🕓<span class="nav-text"> История</span></a>
       <a class="btn btn-sm" href="/plants/new">＋<span class="nav-text"> Растение</span></a>
       <form method="post" action="/logout">
-        <input type="hidden" name="csrf" value="{{ csrf }}">
+        {{ csrf_field }}
         <button class="btn btn-sm btn-ghost">Выйти</button>
       </form>
     </nav>

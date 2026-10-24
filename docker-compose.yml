@@ -1,22 +1,22 @@
+# общие настройки обоих сервисов: один образ, одна БД в ./data, секреты — из .env
+x-app: &app
+  build: .
+  image: my-flowers
+  env_file: .env
+  volumes:
+    - ./data:/app/data
+  restart: unless-stopped
+
 services:
   web:
-    build: .
-    env_file: .env
+    <<: *app
     ports:
       # по умолчанию сайт доступен только с этой машины: http://localhost:8080;
       # на сервере для доступа из интернета в .env: WEB_BIND=0.0.0.0 и WEB_PORT=80
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8000"
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
 
   reminders:
-    build: .
+    <<: *app
     command: ["python", "-m", "app.notifier"]
-    env_file: .env
-    volumes:
-      - ./data:/app/data
     depends_on:
       - web            # web создаёт БД и загружает начальный список растений
-    restart: unless-stopped
-

@@ -157,10 +157,3 @@ FACTS = {
 • Двудомное растение: мужские и женские шишки на разных экземплярах. Исторически из сердцевины после многократной промывки делали крахмал (саго).
 Источники: https://en.wikipedia.org/wiki/Cycas_revoluta https://apps.cals.arizona.edu/arboretum/taxon.aspx?id=90 https://etflin.com/article/452""",
 }
-
-
-def facts_for(species: str) -> str:
-    for key, text in FACTS.items():
-        if species.startswith(key):
-            return text
-    return ""

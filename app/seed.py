@@ -9,10 +9,10 @@ from pathlib import Path
 from app import photos
 from app.care import now_str
 from app.config import SEED_PHOTOS_DIR
-from app.db import PLANT_FIELDS, add_photo, get_db, insert_plant
-from app.diseases import diseases_for
-from app.facts import facts_for
-from app.repotting import repotting_for
+from app.db import INT_FIELDS, PLANT_FIELDS, add_photo, get_db, insert_plant
+from app.diseases import DISEASES
+from app.facts import FACTS
+from app.repotting import REPOTTING
 
 log = logging.getLogger(__name__)
 
@@ -326,8 +326,12 @@ PLANTS = [
     },
 ]
 
-# справочные тексты по виду: колонка -> функция, возвращающая текст по латинскому названию
-REFERENCE = {"facts": facts_for, "diseases": diseases_for, "repotting": repotting_for}
+# справочные тексты по виду: колонка -> {начало латинского названия: текст}
+REFERENCE = {"facts": FACTS, "diseases": DISEASES, "repotting": REPOTTING}
+
+
+def reference_text(field: str, species: str) -> str:
+    return next((text for key, text in REFERENCE[field].items() if species.startswith(key)), "")
 
 
 def seed_if_empty() -> None:
@@ -336,12 +340,10 @@ def seed_if_empty() -> None:
             return
         created_at = now_str()
         for plant in PLANTS:
-            values = {field: plant.get(field) for field in PLANT_FIELDS}
-            for field in ("species", "location", "water_how", "soil", "temperature",
-                          "light", "air_humidity", "toxic", "notes"):
-                values[field] = values[field] or ""
-            for field, text_for in REFERENCE.items():
-                values[field] = text_for(values["species"])
+            values = {field: plant.get(field) if field in INT_FIELDS else plant.get(field) or ""
+                      for field in PLANT_FIELDS}
+            for field in REFERENCE:
+                values[field] = reference_text(field, values["species"])
             plant_id = insert_plant(db, values, created_at)
 
             photo_path = Path(SEED_PHOTOS_DIR) / plant["photo"] if plant.get("photo") else None
@@ -356,8 +358,8 @@ def fill_missing() -> None:
     water_ml = {plant["name"]: plant["water_ml"] for plant in PLANTS}
     with get_db() as db:
         for plant in db.execute("SELECT * FROM plants").fetchall():
-            for field, text_for in REFERENCE.items():
-                text = text_for(plant["species"])
+            for field in REFERENCE:
+                text = reference_text(field, plant["species"])
                 if not plant[field] and text:
                     # имя колонки — из константы REFERENCE, не из ввода пользователя
                     db.execute(f"UPDATE plants SET {field} = ? WHERE id = ?", (text, plant["id"]))
